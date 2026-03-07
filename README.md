@@ -122,3 +122,28 @@ supabase secrets set NOTIFY_FROM_EMAIL="Hotel Notifications <onboarding@resend.d
 - If Razorpay config is present, the **Pay Online** button opens Razorpay Checkout and verifies signature server-side.
 - If Razorpay config is missing, billing falls back to **Pay UPI** deeplink using UPI VPA from settings.
 - Booking and billing events can send notification emails to the property email configured in settings, based on notification toggles.
+
+## Superadmin Quick Setup
+
+1) Copy `.env.example` to `.env` and fill `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`.
+
+2) In Supabase SQL Editor, run in this order:
+
+- `supabase/app_state.sql`
+- `supabase/superadmin.sql`
+- `supabase/superadmin_bootstrap.sql`
+
+3) In Supabase Auth Users, ensure user exists:
+
+- Email: `superadmin@room.com`
+- Password: `Super@123`
+
+4) Start app:
+
+```sh
+npm run dev
+```
+
+5) Login URL:
+
+- `http://localhost:8080/superadmin/login`

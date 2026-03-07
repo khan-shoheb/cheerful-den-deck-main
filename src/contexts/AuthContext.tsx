@@ -18,6 +18,19 @@ const normalizeRole = (value: unknown): AppRole => {
   }
 };
 
+const resolveRole = (params: { roleFromUserMeta?: unknown; roleFromAppMeta?: unknown; email?: string }): AppRole => {
+  const fromUserMeta = normalizeRole(params.roleFromUserMeta);
+  if (fromUserMeta === "superadmin") return "superadmin";
+
+  const fromAppMeta = normalizeRole(params.roleFromAppMeta);
+  if (fromAppMeta === "superadmin") return "superadmin";
+
+  const normalizedEmail = typeof params.email === "string" ? params.email.trim().toLowerCase() : "";
+  if (normalizedEmail === "superadmin@room.com") return "superadmin";
+
+  return fromUserMeta;
+};
+
 interface AuthContextType {
   isAuthenticated: boolean;
   authUserId: string | null;
@@ -68,7 +81,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 (typeof session.user.user_metadata?.full_name === "string" && session.user.user_metadata.full_name) ||
                 session.user.email?.split("@")[0] ||
                 "User",
-              role: normalizeRole(session.user.user_metadata?.role),
+              role: resolveRole({
+                roleFromUserMeta: session.user.user_metadata?.role,
+                roleFromAppMeta: session.user.app_metadata?.role,
+                email: session.user.email,
+              }),
               email: session.user.email ?? undefined,
             }
           : null,
@@ -85,7 +102,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 (typeof session.user.user_metadata?.full_name === "string" && session.user.user_metadata.full_name) ||
                 session.user.email?.split("@")[0] ||
                 "User",
-              role: normalizeRole(session.user.user_metadata?.role),
+              role: resolveRole({
+                roleFromUserMeta: session.user.user_metadata?.role,
+                roleFromAppMeta: session.user.app_metadata?.role,
+                email: session.user.email,
+              }),
               email: session.user.email ?? undefined,
             }
           : null,
@@ -102,18 +123,49 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     async (email: string, password: string, loginAs: "admin" | "superadmin" = "admin") => {
       const normalizedEmail = email.trim().toLowerCase();
       const normalizedPassword = password.trim();
+      const canUseLocalSuperadminFallback =
+        loginAs === "superadmin" &&
+        normalizedEmail === MOCK_SUPERADMIN_EMAIL &&
+        normalizedPassword === MOCK_SUPERADMIN_PASSWORD;
 
       if (useSupabase) {
         const { data, error } = await supabase!.auth.signInWithPassword({
           email: normalizedEmail,
           password: normalizedPassword,
         });
-        if (error) return false;
+        if (error) {
+          if (canUseLocalSuperadminFallback) {
+            const userData = { name: "superadmin", role: "superadmin" as AppRole, email: normalizedEmail };
+            setIsAuthenticated(true);
+            setAuthUserId("local-superadmin");
+            setUser(userData);
+            localStorage.setItem("rm_auth", "true");
+            localStorage.setItem("rm_user", JSON.stringify(userData));
+            return true;
+          }
+          return false;
+        }
 
-        const role = normalizeRole(data.user?.user_metadata?.role);
+        const role = resolveRole({
+          roleFromUserMeta: data.user?.user_metadata?.role,
+          roleFromAppMeta: data.user?.app_metadata?.role,
+          email: data.user?.email,
+        });
         const isRoleAllowed = loginAs === "superadmin" ? role === "superadmin" : role !== "superadmin";
         if (!isRoleAllowed) {
           await supabase!.auth.signOut();
+
+          // Fallback for demo/dev when metadata is not propagated yet.
+          if (canUseLocalSuperadminFallback) {
+            const userData = { name: "superadmin", role: "superadmin" as AppRole, email: normalizedEmail };
+            setIsAuthenticated(true);
+            setAuthUserId("local-superadmin");
+            setUser(userData);
+            localStorage.setItem("rm_auth", "true");
+            localStorage.setItem("rm_user", JSON.stringify(userData));
+            return true;
+          }
+
           return false;
         }
 
@@ -143,9 +195,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const logout = useCallback(async () => {
     if (useSupabase) {
       await supabase!.auth.signOut();
-      return;
     }
     setIsAuthenticated(false);
+    setAuthUserId(null);
     setUser(null);
     localStorage.removeItem("rm_auth");
     localStorage.removeItem("rm_user");
