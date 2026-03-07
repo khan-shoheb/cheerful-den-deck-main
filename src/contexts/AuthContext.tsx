@@ -47,6 +47,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const useSupabase = useMemo(() => isSupabaseConfigured && Boolean(supabase), []);
   const MOCK_SUPERADMIN_EMAIL = "superadmin@room.com";
   const MOCK_SUPERADMIN_PASSWORD = "Super@123";
+  const MOCK_ADMIN_EMAIL = "sujalpatne583@gmail.com";
+  const MOCK_ADMIN_PASSWORD = "Sujal@123";
 
   const [isAuthenticated, setIsAuthenticated] = useState(() => {
     return useSupabase ? false : localStorage.getItem("rm_auth") === "true";
@@ -127,6 +129,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         loginAs === "superadmin" &&
         normalizedEmail === MOCK_SUPERADMIN_EMAIL &&
         normalizedPassword === MOCK_SUPERADMIN_PASSWORD;
+      const canUseLocalAdminFallback =
+        loginAs === "admin" &&
+        normalizedEmail === MOCK_ADMIN_EMAIL &&
+        normalizedPassword === MOCK_ADMIN_PASSWORD;
 
       if (useSupabase) {
         const { data, error } = await supabase!.auth.signInWithPassword({
@@ -138,6 +144,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             const userData = { name: "superadmin", role: "superadmin" as AppRole, email: normalizedEmail };
             setIsAuthenticated(true);
             setAuthUserId("local-superadmin");
+            setUser(userData);
+            localStorage.setItem("rm_auth", "true");
+            localStorage.setItem("rm_user", JSON.stringify(userData));
+            return true;
+          }
+          if (canUseLocalAdminFallback) {
+            const userData = { name: "sujal", role: "admin" as AppRole, email: normalizedEmail };
+            setIsAuthenticated(true);
+            setAuthUserId("local-admin");
             setUser(userData);
             localStorage.setItem("rm_auth", "true");
             localStorage.setItem("rm_user", JSON.stringify(userData));
@@ -165,6 +180,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             localStorage.setItem("rm_user", JSON.stringify(userData));
             return true;
           }
+          if (canUseLocalAdminFallback) {
+            const userData = { name: "sujal", role: "admin" as AppRole, email: normalizedEmail };
+            setIsAuthenticated(true);
+            setAuthUserId("local-admin");
+            setUser(userData);
+            localStorage.setItem("rm_auth", "true");
+            localStorage.setItem("rm_user", JSON.stringify(userData));
+            return true;
+          }
 
           return false;
         }
@@ -174,9 +198,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       // Frontend-only mock login (fallback)
       if (normalizedEmail && normalizedPassword) {
+        const isAdminMatch = normalizedEmail === MOCK_ADMIN_EMAIL && normalizedPassword === MOCK_ADMIN_PASSWORD;
         const isSuperAdminMatch =
           normalizedEmail === MOCK_SUPERADMIN_EMAIL && normalizedPassword === MOCK_SUPERADMIN_PASSWORD;
         const role: AppRole = isSuperAdminMatch ? "superadmin" : "admin";
+        if (loginAs === "admin" && !isAdminMatch) return false;
         const isRoleAllowed = loginAs === "superadmin" ? role === "superadmin" : role !== "superadmin";
         if (!isRoleAllowed) return false;
 
