@@ -1,8 +1,11 @@
+import { useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useAppState } from "@/hooks/use-app-state";
 import { useAuditLog } from "@/hooks/use-audit-log";
 import { useSuperAdminNotifications } from "@/hooks/use-superadmin-notifications";
+import { canUseBackend } from "@/lib/hotel-api";
+import { supabase } from "@/lib/supabase";
 
 type ApprovalStatus = "Pending" | "Approved" | "Rejected";
 
@@ -25,23 +28,123 @@ type Announcement = {
   approvalStatus?: ApprovalStatus;
 };
 
+type PropertyDbRow = {
+  id: string;
+  name: string;
+  city: string;
+  occupancy: string;
+  health_status: PropertyRow["status"];
+  approval_status: ApprovalStatus;
+};
+
+type AnnouncementDbRow = {
+  id: string;
+  title: string;
+  audience: string;
+  priority: Announcement["priority"];
+  approval_status: ApprovalStatus;
+};
+
 const SuperAdminApprovals = () => {
   const [properties, setProperties] = useAppState<PropertyRow[]>("sa_properties", []);
   const [announcements, setAnnouncements] = useAppState<Announcement[]>("sa_announcements", []);
   const { logAction } = useAuditLog();
   const { pushNotification } = useSuperAdminNotifications();
 
+  const fetchApprovalsData = async () => {
+    if (!canUseBackend() || !supabase) return;
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) return;
+
+    const [propertiesRes, announcementsRes] = await Promise.all([
+      supabase
+        .from("sa_properties")
+        .select("id,name,city,occupancy,health_status,approval_status")
+        .eq("user_id", user.id)
+        .order("updated_at", { ascending: false }),
+      supabase
+        .from("sa_announcements")
+        .select("id,title,audience,priority,approval_status")
+        .eq("user_id", user.id)
+        .order("updated_at", { ascending: false }),
+    ]);
+
+    if (!propertiesRes.error && propertiesRes.data) {
+      setProperties(
+        (propertiesRes.data as PropertyDbRow[]).map((row) => ({
+          id: row.id,
+          name: row.name,
+          city: row.city,
+          admins: 0,
+          occupancy: row.occupancy,
+          status: row.health_status,
+          approvalStatus: row.approval_status,
+        })),
+      );
+    }
+
+    if (!announcementsRes.error && announcementsRes.data) {
+      setAnnouncements(
+        (announcementsRes.data as AnnouncementDbRow[]).map((row) => ({
+          id: row.id,
+          title: row.title,
+          audience: row.audience,
+          date: "",
+          priority: row.priority,
+          approvalStatus: row.approval_status,
+        })),
+      );
+    }
+  };
+
+  useEffect(() => {
+    void fetchApprovalsData();
+  }, []);
+
   const pendingProperties = (properties || []).filter((item) => (item.approvalStatus || "Approved") === "Pending");
   const pendingAnnouncements = (announcements || []).filter(
     (item) => (item.approvalStatus || "Approved") === "Pending",
   );
 
-  const updatePropertyApproval = (id: string, status: ApprovalStatus) => {
+  const updatePropertyApproval = async (id: string, status: ApprovalStatus) => {
     const target = (properties || []).find((property) => property.id === id);
     if (!target) return;
-    setProperties((prev) =>
-      (prev || []).map((property) => (property.id === id ? { ...property, approvalStatus: status } : property)),
-    );
+
+    if (canUseBackend() && supabase) {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) return;
+
+      const { error } = await supabase
+        .from("sa_properties")
+        .update({ approval_status: status })
+        .eq("user_id", user.id)
+        .eq("id", id);
+
+      if (!error) {
+        await supabase.from("sa_approvals").insert({
+          user_id: user.id,
+          module: "properties",
+          item_id: id,
+          item_name: target.name,
+          requested_status: "Pending",
+          decided_status: status,
+          decided_by: "superadmin",
+          decided_at: new Date().toISOString(),
+        });
+      }
+
+      await fetchApprovalsData();
+    } else {
+      setProperties((prev) =>
+        (prev || []).map((property) => (property.id === id ? { ...property, approvalStatus: status } : property)),
+      );
+    }
+
     logAction({
       module: "superadmin-approvals",
       action: status.toLowerCase(),
@@ -55,12 +158,42 @@ const SuperAdminApprovals = () => {
     });
   };
 
-  const updateAnnouncementApproval = (id: string, status: ApprovalStatus) => {
+  const updateAnnouncementApproval = async (id: string, status: ApprovalStatus) => {
     const target = (announcements || []).find((entry) => entry.id === id);
     if (!target) return;
-    setAnnouncements((prev) =>
-      (prev || []).map((entry) => (entry.id === id ? { ...entry, approvalStatus: status } : entry)),
-    );
+
+    if (canUseBackend() && supabase) {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) return;
+
+      const { error } = await supabase
+        .from("sa_announcements")
+        .update({ approval_status: status })
+        .eq("user_id", user.id)
+        .eq("id", id);
+
+      if (!error) {
+        await supabase.from("sa_approvals").insert({
+          user_id: user.id,
+          module: "announcements",
+          item_id: id,
+          item_name: target.title,
+          requested_status: "Pending",
+          decided_status: status,
+          decided_by: "superadmin",
+          decided_at: new Date().toISOString(),
+        });
+      }
+
+      await fetchApprovalsData();
+    } else {
+      setAnnouncements((prev) =>
+        (prev || []).map((entry) => (entry.id === id ? { ...entry, approvalStatus: status } : entry)),
+      );
+    }
+
     logAction({
       module: "superadmin-approvals",
       action: status.toLowerCase(),

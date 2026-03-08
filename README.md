@@ -130,7 +130,11 @@ supabase secrets set NOTIFY_FROM_EMAIL="Hotel Notifications <onboarding@resend.d
 2) In Supabase SQL Editor, run in this order:
 
 - `supabase/app_state.sql`
+- `supabase/hotel_entities.sql`
+- `supabase/billing_enhancements.sql`
 - `supabase/superadmin.sql`
+- `supabase/superadmin_users_settings.sql`
+- `supabase/superadmin_permissions_matrix.sql`
 - `supabase/superadmin_bootstrap.sql`
 
 3) In Supabase Auth Users, ensure user exists:

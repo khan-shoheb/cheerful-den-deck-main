@@ -1,11 +1,21 @@
+import { useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { useAppState } from "@/hooks/use-app-state";
 import { useAuditLog } from "@/hooks/use-audit-log";
 import { useSuperAdminNotifications } from "@/hooks/use-superadmin-notifications";
+import { canUseBackend } from "@/lib/hotel-api";
+import { supabase } from "@/lib/supabase";
+import { toast } from "@/components/ui/use-toast";
 
 type RoleKey = "admin" | "manager" | "frontdesk" | "housekeeping" | "accountant";
 type ModulePermission = {
+  module: string;
+  permissions: Record<RoleKey, boolean>;
+};
+
+type RoleMatrixDbRow = {
+  id: string;
   module: string;
   permissions: Record<RoleKey, boolean>;
 };
@@ -40,20 +50,83 @@ const SuperAdminRoleMatrix = () => {
   const { logAction } = useAuditLog();
   const { pushNotification } = useSuperAdminNotifications();
 
-  const togglePermission = (module: string, role: RoleKey, checked: boolean) => {
-    setMatrix((prev) =>
-      (prev || []).map((item) =>
-        item.module === module
-          ? {
-              ...item,
-              permissions: {
-                ...item.permissions,
-                [role]: checked,
-              },
-            }
-          : item,
-      ),
+  const fetchMatrixFromBackend = async () => {
+    if (!canUseBackend() || !supabase) return;
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) return;
+
+    const { data, error } = await supabase
+      .from("sa_role_matrix_config")
+      .select("id,module,permissions")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: true });
+
+    if (error || !data) return;
+
+    setMatrix(
+      (data as RoleMatrixDbRow[]).map((row) => ({
+        module: row.module,
+        permissions: row.permissions,
+      })),
     );
+  };
+
+  useEffect(() => {
+    void fetchMatrixFromBackend();
+  }, []);
+
+  const togglePermission = async (module: string, role: RoleKey, checked: boolean) => {
+    const previousMatrix = matrix || [];
+    const nextMatrix = (matrix || []).map((item) =>
+      item.module === module
+        ? {
+            ...item,
+            permissions: {
+              ...item.permissions,
+              [role]: checked,
+            },
+          }
+        : item,
+    );
+
+    setMatrix(nextMatrix);
+
+    if (canUseBackend() && supabase) {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) {
+        setMatrix(previousMatrix);
+        toast({ title: "Session required", description: "Please login again.", variant: "destructive" });
+        return;
+      }
+
+      const target = nextMatrix.find((item) => item.module === module);
+      if (!target) {
+        setMatrix(previousMatrix);
+        return;
+      }
+
+      const { error } = await supabase
+        .from("sa_role_matrix_config")
+        .upsert(
+          {
+            user_id: user.id,
+            module,
+            permissions: target.permissions,
+          },
+          { onConflict: "user_id,module" },
+        );
+
+      if (error) {
+        setMatrix(previousMatrix);
+        toast({ title: "Update failed", description: error.message, variant: "destructive" });
+        return;
+      }
+    }
 
     const status = checked ? "enabled" : "disabled";
     logAction({

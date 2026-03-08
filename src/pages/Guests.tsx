@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,20 +21,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Search, Plus, Mail, Phone } from "lucide-react";
+import { toast } from "@/components/ui/use-toast";
+import { canUseBackend, createGuest, deleteGuest, fetchGuests, updateGuest, type GuestRecord } from "@/lib/hotel-api";
 
 type GuestStatus = "Checked In" | "Upcoming" | "Checked Out" | "VIP";
 
-type Guest = {
-  id: string;
-  name: string;
-  email: string;
-  phone: string;
-  visits: number;
-  status: GuestStatus;
-  lastVisit: string; // YYYY-MM-DD
-};
-
-const initialGuests: Guest[] = [
+const initialGuests: GuestRecord[] = [
   { id: "1", name: "Sarah Johnson", email: "sarah@email.com", phone: "+1 555-0101", visits: 5, status: "Checked In", lastVisit: "2024-07-20" },
   { id: "2", name: "Mike Chen", email: "mike@email.com", phone: "+1 555-0102", visits: 2, status: "Upcoming", lastVisit: "2024-07-21" },
   { id: "3", name: "Emily Davis", email: "emily@email.com", phone: "+1 555-0103", visits: 8, status: "Checked In", lastVisit: "2024-07-22" },
@@ -51,9 +43,14 @@ const statusColors: Record<GuestStatus, string> = {
 };
 
 const Guests = () => {
-  const [guests, setGuests] = useAppState<Guest[]>("rm_guests", initialGuests);
+  const [guests, setGuests] = useAppState<GuestRecord[]>("rm_guests", initialGuests);
   const [search, setSearch] = useState("");
   const [addOpen, setAddOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [isCreatingGuest, setIsCreatingGuest] = useState(false);
+  const [isSavingGuest, setIsSavingGuest] = useState(false);
+  const [busyGuestId, setBusyGuestId] = useState<string | null>(null);
+  const [editGuest, setEditGuest] = useState<GuestRecord | null>(null);
   const [newGuest, setNewGuest] = useState<{
     name: string;
     email: string;
@@ -77,6 +74,22 @@ const Guests = () => {
     Number.isFinite(Number(newGuest.visits)) &&
     Number(newGuest.visits) >= 0;
 
+  useEffect(() => {
+    if (!canUseBackend()) return;
+
+    let cancelled = false;
+
+    (async () => {
+      const remoteGuests = await fetchGuests();
+      if (cancelled) return;
+      setGuests(remoteGuests);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [setGuests]);
+
   const filteredGuests = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
     if (normalizedSearch.length === 0) return guests;
@@ -90,9 +103,11 @@ const Guests = () => {
     });
   }, [guests, search]);
 
-  const handleCreateGuest = (event: React.FormEvent) => {
+  const handleCreateGuest = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!canSubmitNewGuest) return;
+    if (!canSubmitNewGuest || isCreatingGuest) return;
+
+    setIsCreatingGuest(true);
 
     const id =
       typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -100,7 +115,7 @@ const Guests = () => {
           (crypto as any).randomUUID()
         : String(Date.now());
 
-    const nextGuest: Guest = {
+    const nextGuest: GuestRecord = {
       id,
       name: newGuest.name.trim(),
       email: newGuest.email.trim(),
@@ -110,7 +125,21 @@ const Guests = () => {
       lastVisit: newGuest.lastVisit || new Date().toISOString().slice(0, 10),
     };
 
+    if (canUseBackend()) {
+      const isCreated = await createGuest(nextGuest);
+      if (!isCreated) {
+        setIsCreatingGuest(false);
+        toast({
+          title: "Guest save failed",
+          description: "Unable to save guest in backend. Please re-login and try again.",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
     setGuests((prev) => [nextGuest, ...prev]);
+
     setAddOpen(false);
     setNewGuest({
       name: "",
@@ -120,6 +149,59 @@ const Guests = () => {
       status: "Upcoming",
       lastVisit: "",
     });
+
+    toast({
+      title: "Guest created",
+      description: `${nextGuest.name} has been created successfully.`,
+    });
+
+    setIsCreatingGuest(false);
+  };
+
+  const handleSaveGuest = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!editGuest || isSavingGuest) return;
+
+    setIsSavingGuest(true);
+    const previousGuests = guests;
+    setGuests((prev) => prev.map((g) => (g.id === editGuest.id ? editGuest : g)));
+
+    if (canUseBackend()) {
+      const ok = await updateGuest(editGuest);
+      if (!ok) {
+        setGuests(previousGuests);
+        setIsSavingGuest(false);
+        toast({ title: "Update failed", description: "Unable to update guest in backend.", variant: "destructive" });
+        return;
+      }
+    }
+
+    setEditOpen(false);
+    setEditGuest(null);
+    toast({ title: "Guest updated", description: `${editGuest.name} updated successfully.` });
+    setIsSavingGuest(false);
+  };
+
+  const handleDeleteGuest = async (guest: GuestRecord) => {
+    if (busyGuestId) return;
+    if (!window.confirm(`Delete guest ${guest.name}?`)) return;
+
+    const previousGuests = guests;
+    setBusyGuestId(guest.id);
+    setGuests((prev) => prev.filter((g) => g.id !== guest.id));
+
+    if (canUseBackend()) {
+      const ok = await deleteGuest(guest.id);
+      if (!ok) {
+        setGuests(previousGuests);
+        setBusyGuestId(null);
+        toast({ title: "Delete failed", description: "Unable to delete guest from backend.", variant: "destructive" });
+        return;
+      }
+    }
+
+    toast({ title: "Guest deleted", description: `${guest.name} deleted successfully.` });
+    setBusyGuestId(null);
   };
 
   return (
@@ -217,11 +299,74 @@ const Guests = () => {
                 <Button type="button" variant="outline" onClick={() => setAddOpen(false)}>
                   Cancel
                 </Button>
-                <Button type="submit" disabled={!canSubmitNewGuest}>
-                  Add Guest
+                <Button type="submit" disabled={!canSubmitNewGuest || isCreatingGuest}>
+                  {isCreatingGuest ? "Adding..." : "Add Guest"}
                 </Button>
               </DialogFooter>
             </form>
+          </DialogContent>
+        </Dialog>
+        <Dialog
+          open={editOpen}
+          onOpenChange={(open) => {
+            setEditOpen(open);
+            if (!open) setEditGuest(null);
+          }}
+        >
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Edit Guest</DialogTitle>
+            </DialogHeader>
+            {editGuest && (
+              <form onSubmit={handleSaveGuest} className="space-y-4">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-guest-name">Name</Label>
+                    <Input
+                      id="edit-guest-name"
+                      value={editGuest.name}
+                      onChange={(e) => setEditGuest((prev) => (prev ? { ...prev, name: e.target.value } : prev))}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-guest-status">Status</Label>
+                    <Input
+                      id="edit-guest-status"
+                      value={editGuest.status}
+                      onChange={(e) =>
+                        setEditGuest((prev) =>
+                          prev ? { ...prev, status: e.target.value as GuestStatus } : prev,
+                        )
+                      }
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-guest-email">Email</Label>
+                    <Input
+                      id="edit-guest-email"
+                      value={editGuest.email}
+                      onChange={(e) => setEditGuest((prev) => (prev ? { ...prev, email: e.target.value } : prev))}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-guest-phone">Phone</Label>
+                    <Input
+                      id="edit-guest-phone"
+                      value={editGuest.phone}
+                      onChange={(e) => setEditGuest((prev) => (prev ? { ...prev, phone: e.target.value } : prev))}
+                    />
+                  </div>
+                </div>
+                <DialogFooter>
+                  <Button type="button" variant="outline" onClick={() => setEditOpen(false)}>
+                    Cancel
+                  </Button>
+                  <Button type="submit" disabled={isSavingGuest}>{isSavingGuest ? "Saving..." : "Save"}</Button>
+                </DialogFooter>
+              </form>
+            )}
           </DialogContent>
         </Dialog>
       </div>
@@ -261,6 +406,14 @@ const Guests = () => {
               <div className="space-y-2 text-sm text-muted-foreground">
                 <div className="flex items-center gap-2"><Mail className="h-3.5 w-3.5" />{g.email}</div>
                 <div className="flex items-center gap-2"><Phone className="h-3.5 w-3.5" />{g.phone}</div>
+              </div>
+              <div className="mt-4 flex items-center gap-2">
+                <Button type="button" size="sm" variant="outline" onClick={() => { setEditGuest(g); setEditOpen(true); }}>
+                  Edit
+                </Button>
+                <Button type="button" size="sm" variant="destructive" disabled={busyGuestId === g.id} onClick={() => void handleDeleteGuest(g)}>
+                  {busyGuestId === g.id ? "Deleting..." : "Delete"}
+                </Button>
               </div>
             </CardContent>
           </Card>

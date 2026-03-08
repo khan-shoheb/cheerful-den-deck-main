@@ -5,13 +5,16 @@ import {
   DollarSign,
   TrendingUp,
   TrendingDown,
+  Minus,
   ArrowUpRight,
 } from "lucide-react";
+import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/contexts/AuthContext";
 import { formatINR } from "@/lib/currency";
+import { useAppState } from "@/hooks/use-app-state";
 import {
   BarChart,
   Bar,
@@ -25,46 +28,280 @@ import {
   Cell,
 } from "recharts";
 
-const stats = [
-  { label: "Total Rooms", value: "120", icon: BedDouble, change: "+2", trend: "up" },
-  { label: "Active Bookings", value: "87", icon: CalendarCheck, change: "+12%", trend: "up" },
-  { label: "Guests Today", value: "156", icon: Users, change: "+8", trend: "up" },
-  { label: "Revenue (MTD)", value: formatINR(48290), icon: DollarSign, change: "+18%", trend: "up" },
-];
+type RoomStatus = "available" | "occupied" | "maintenance" | "cleaning";
+type BookingStatus = "Checked In" | "Checked Out" | "Confirmed" | "Pending" | "Cancelled";
+type InvoiceStatus = "Paid" | "Pending" | "Overdue";
 
-const revenueData = [
-  { month: "Jan", revenue: 32000 },
-  { month: "Feb", revenue: 28000 },
-  { month: "Mar", revenue: 35000 },
-  { month: "Apr", revenue: 40000 },
-  { month: "May", revenue: 38000 },
-  { month: "Jun", revenue: 45000 },
-  { month: "Jul", revenue: 48290 },
-];
+type Room = {
+  id: string;
+  number: string;
+  type: string;
+  floor: number;
+  status: RoomStatus;
+};
 
-const roomStatusData = [
-  { name: "Occupied", value: 72, color: "hsl(var(--primary))" },
-  { name: "Available", value: 35, color: "hsl(var(--success))" },
-  { name: "Maintenance", value: 8, color: "hsl(var(--warning))" },
-  { name: "Cleaning", value: 5, color: "hsl(var(--info))" },
-];
+type Booking = {
+  id: string;
+  guest: string;
+  room: string;
+  checkIn: string;
+  checkOut: string;
+  total: number;
+  status: BookingStatus;
+};
 
-const recentBookings = [
-  { guest: "Sarah Johnson", room: "Suite 401", checkIn: "Jul 20", checkOut: "Jul 25", status: "Checked In" },
-  { guest: "Mike Chen", room: "Room 215", checkIn: "Jul 21", checkOut: "Jul 23", status: "Confirmed" },
-  { guest: "Emily Davis", room: "Suite 502", checkIn: "Jul 22", checkOut: "Jul 28", status: "Pending" },
-  { guest: "James Wilson", room: "Room 108", checkIn: "Jul 20", checkOut: "Jul 22", status: "Checked In" },
-  { guest: "Anna Martinez", room: "Room 312", checkIn: "Jul 23", checkOut: "Jul 26", status: "Confirmed" },
-];
+type Guest = {
+  id: string;
+  name: string;
+};
+
+type Invoice = {
+  id: string;
+  amount: number;
+  date: string;
+  status: InvoiceStatus;
+};
+
+type TrendDirection = "up" | "down" | "neutral";
 
 const statusColors: Record<string, string> = {
   "Checked In": "bg-success/10 text-success",
   Confirmed: "bg-primary/10 text-primary",
   Pending: "bg-warning/10 text-warning",
+  "Checked Out": "bg-muted text-muted-foreground",
+  Cancelled: "bg-destructive/10 text-destructive",
 };
+
+function parseDateInput(value: string): Date | null {
+  if (!value) return null;
+
+  const onlyDate = /^\d{4}-\d{2}-\d{2}$/;
+  if (onlyDate.test(value)) {
+    const [y, m, d] = value.split("-").map(Number);
+    const date = new Date(y, m - 1, d);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function toDateOnly(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function formatPercent(value: number): string {
+  const rounded = Math.round(value * 10) / 10;
+  const sign = rounded > 0 ? "+" : "";
+  return `${sign}${rounded.toFixed(1).replace(/\.0$/, "")}%`;
+}
+
+function calculatePercentChange(current: number, previous: number): { change: string; trend: TrendDirection } {
+  if (previous === 0 && current === 0) return { change: "0%", trend: "neutral" };
+  if (previous === 0) return { change: "+100%", trend: "up" };
+
+  const raw = ((current - previous) / previous) * 100;
+  const trend: TrendDirection = raw > 0 ? "up" : raw < 0 ? "down" : "neutral";
+  return { change: formatPercent(raw), trend };
+}
+
+function calculatePointChange(current: number, previous: number): { change: string; trend: TrendDirection } {
+  const diff = Math.round((current - previous) * 10) / 10;
+  const sign = diff > 0 ? "+" : "";
+  const trend: TrendDirection = diff > 0 ? "up" : diff < 0 ? "down" : "neutral";
+  const display = `${sign}${diff.toFixed(1).replace(/\.0$/, "")}pp`;
+  return { change: display, trend };
+}
+
+function isBookingActiveOn(booking: Booking, day: Date): boolean {
+  if (booking.status === "Cancelled" || booking.status === "Checked Out") return false;
+
+  const checkIn = parseDateInput(booking.checkIn);
+  const checkOut = parseDateInput(booking.checkOut);
+  if (!checkIn || !checkOut) return false;
+
+  const start = toDateOnly(checkIn);
+  const end = toDateOnly(checkOut);
+  const target = toDateOnly(day);
+  return start <= target && target < end;
+}
+
+function isDateInRangeInclusive(dateValue: string, start: Date, end: Date): boolean {
+  const date = parseDateInput(dateValue);
+  if (!date) return false;
+  const target = toDateOnly(date);
+  return target >= toDateOnly(start) && target <= toDateOnly(end);
+}
 
 const Dashboard = () => {
   const { user } = useAuth();
+  const [rooms] = useAppState<Room[]>("rm_rooms", []);
+  const [bookings] = useAppState<Booking[]>("rm_bookings", []);
+  const [guests] = useAppState<Guest[]>("rm_guests", []);
+  const [invoices] = useAppState<Invoice[]>("rm_invoices", []);
+
+  const now = useMemo(() => toDateOnly(new Date()), []);
+  const currentMonthStart = useMemo(() => new Date(now.getFullYear(), now.getMonth(), 1), [now]);
+  const previousMonthStart = useMemo(() => new Date(now.getFullYear(), now.getMonth() - 1, 1), [now]);
+  const previousMonthEnd = useMemo(() => new Date(now.getFullYear(), now.getMonth(), 0), [now]);
+  const currentDayOfMonth = now.getDate();
+  const previousComparableEnd = useMemo(
+    () => new Date(previousMonthStart.getFullYear(), previousMonthStart.getMonth(), Math.min(currentDayOfMonth, previousMonthEnd.getDate())),
+    [currentDayOfMonth, previousMonthEnd, previousMonthStart],
+  );
+  const yesterday = useMemo(() => new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1), [now]);
+  const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  const yesterdayIso = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, "0")}-${String(yesterday.getDate()).padStart(2, "0")}`;
+
+  const activeBookingsCount = useMemo(() => {
+    return bookings.filter((booking) => isBookingActiveOn(booking, now)).length;
+  }, [bookings, now]);
+
+  const activeBookingsYesterday = useMemo(() => {
+    return bookings.filter((booking) => isBookingActiveOn(booking, yesterday)).length;
+  }, [bookings, yesterday]);
+
+  const guestsTodayCount = useMemo(() => {
+    const fromCheckIns = bookings.filter((booking) => booking.checkIn === todayIso && booking.status !== "Cancelled").length;
+    if (fromCheckIns > 0) return fromCheckIns;
+    return guests.length;
+  }, [bookings, guests.length, todayIso]);
+
+  const yesterdayGuests = useMemo(() => {
+    return bookings.filter((booking) => booking.checkIn === yesterdayIso && booking.status !== "Cancelled").length;
+  }, [bookings, yesterdayIso]);
+
+  const occupiedRoomsToday = useMemo(() => {
+    return new Set(bookings.filter((booking) => isBookingActiveOn(booking, now)).map((booking) => booking.room)).size;
+  }, [bookings, now]);
+
+  const occupiedRoomsYesterday = useMemo(() => {
+    return new Set(bookings.filter((booking) => isBookingActiveOn(booking, yesterday)).map((booking) => booking.room)).size;
+  }, [bookings, yesterday]);
+
+  const currentOccupancyRate = rooms.length > 0 ? (occupiedRoomsToday / rooms.length) * 100 : 0;
+  const previousOccupancyRate = rooms.length > 0 ? (occupiedRoomsYesterday / rooms.length) * 100 : 0;
+
+  const revenueMtd = useMemo(() => {
+    const paidThisMonth = invoices
+      .filter((invoice) => {
+        return invoice.status === "Paid" && isDateInRangeInclusive(invoice.date, currentMonthStart, now);
+      })
+      .reduce((sum, invoice) => sum + (Number.isFinite(invoice.amount) ? invoice.amount : 0), 0);
+
+    if (paidThisMonth > 0) return paidThisMonth;
+
+    return bookings
+      .filter((booking) => {
+        return booking.status !== "Cancelled" && isDateInRangeInclusive(booking.checkIn, currentMonthStart, now);
+      })
+      .reduce((sum, booking) => sum + (Number.isFinite(booking.total) ? booking.total : 0), 0);
+  }, [bookings, currentMonthStart, invoices, now]);
+
+  const previousMonthRevenue = useMemo(() => {
+    const paidPrevious = invoices
+      .filter((invoice) => invoice.status === "Paid" && isDateInRangeInclusive(invoice.date, previousMonthStart, previousComparableEnd))
+      .reduce((sum, invoice) => sum + (Number.isFinite(invoice.amount) ? invoice.amount : 0), 0);
+
+    if (paidPrevious > 0) return paidPrevious;
+
+    return bookings
+      .filter((booking) => booking.status !== "Cancelled" && isDateInRangeInclusive(booking.checkIn, previousMonthStart, previousComparableEnd))
+      .reduce((sum, booking) => sum + (Number.isFinite(booking.total) ? booking.total : 0), 0);
+  }, [bookings, invoices, previousComparableEnd, previousMonthStart]);
+
+  const roomsChange = calculatePointChange(currentOccupancyRate, previousOccupancyRate);
+
+  const bookingsChange = calculatePercentChange(activeBookingsCount, activeBookingsYesterday);
+  const guestsTodayChange = calculatePercentChange(guestsTodayCount, yesterdayGuests);
+  const revenueChange = calculatePercentChange(revenueMtd, previousMonthRevenue);
+
+  const stats = [
+    {
+      label: "Total Rooms",
+      value: String(rooms.length),
+      icon: BedDouble,
+      change: roomsChange.change,
+      trend: roomsChange.trend,
+      compareLabel: "vs yesterday occupancy",
+    },
+    {
+      label: "Active Bookings",
+      value: String(activeBookingsCount),
+      icon: CalendarCheck,
+      change: bookingsChange.change,
+      trend: bookingsChange.trend,
+      compareLabel: "vs yesterday",
+    },
+    {
+      label: "Guests Today",
+      value: String(guestsTodayCount),
+      icon: Users,
+      change: guestsTodayChange.change,
+      trend: guestsTodayChange.trend,
+      compareLabel: "vs yesterday",
+    },
+    {
+      label: "Revenue (MTD)",
+      value: formatINR(revenueMtd),
+      icon: DollarSign,
+      change: revenueChange.change,
+      trend: revenueChange.trend,
+      compareLabel: "vs same period last month",
+    },
+  ];
+
+  const revenueData = useMemo(() => {
+    const rows: Array<{ month: string; revenue: number }> = [];
+
+    for (let i = 5; i >= 0; i -= 1) {
+      const date = new Date(currentMonthStart.getFullYear(), currentMonthStart.getMonth() - i, 1);
+      const month = date.toLocaleString(undefined, { month: "short" });
+
+      const monthRevenue = invoices
+        .filter((invoice) => {
+          const invoiceDate = new Date(invoice.date);
+          return (
+            invoice.status === "Paid" &&
+            !Number.isNaN(invoiceDate.getTime()) &&
+            invoiceDate.getMonth() === date.getMonth() &&
+            invoiceDate.getFullYear() === date.getFullYear()
+          );
+        })
+        .reduce((sum, invoice) => sum + (Number.isFinite(invoice.amount) ? invoice.amount : 0), 0);
+
+      rows.push({ month, revenue: monthRevenue });
+    }
+
+    return rows;
+  }, [currentMonthStart, invoices]);
+
+  const roomStatusData = useMemo(
+    () => [
+      { name: "Occupied", value: rooms.filter((room) => room.status === "occupied").length, color: "hsl(var(--primary))" },
+      { name: "Available", value: rooms.filter((room) => room.status === "available").length, color: "hsl(var(--success))" },
+      {
+        name: "Maintenance",
+        value: rooms.filter((room) => room.status === "maintenance").length,
+        color: "hsl(var(--warning))",
+      },
+      { name: "Cleaning", value: rooms.filter((room) => room.status === "cleaning").length, color: "hsl(var(--info))" },
+    ],
+    [rooms],
+  );
+
+  const recentBookings = useMemo(() => {
+    return [...bookings]
+      .sort((a, b) => new Date(b.checkIn).getTime() - new Date(a.checkIn).getTime())
+      .slice(0, 5)
+      .map((booking) => ({
+        guest: booking.guest,
+        room: booking.room,
+        checkIn: new Date(booking.checkIn).toLocaleDateString(undefined, { month: "short", day: "2-digit" }),
+        checkOut: new Date(booking.checkOut).toLocaleDateString(undefined, { month: "short", day: "2-digit" }),
+        status: booking.status,
+      }));
+  }, [bookings]);
 
   return (
     <div className="space-y-8">
@@ -82,14 +319,25 @@ const Dashboard = () => {
                 <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
                   <stat.icon className="h-5 w-5 text-primary" />
                 </div>
-                <span className="flex items-center gap-1 text-xs font-medium text-success">
-                  {stat.trend === "up" ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
+                <span
+                  className={`flex items-center gap-1 text-xs font-medium ${
+                    stat.trend === "up" ? "text-success" : stat.trend === "down" ? "text-destructive" : "text-muted-foreground"
+                  }`}
+                >
+                  {stat.trend === "up" ? (
+                    <TrendingUp className="h-3 w-3" />
+                  ) : stat.trend === "down" ? (
+                    <TrendingDown className="h-3 w-3" />
+                  ) : (
+                    <Minus className="h-3 w-3" />
+                  )}
                   {stat.change}
                 </span>
               </div>
               <div className="mt-3">
                 <p className="text-2xl font-bold text-foreground">{stat.value}</p>
                 <p className="text-sm text-muted-foreground">{stat.label}</p>
+                <p className="text-xs text-muted-foreground/80">{stat.compareLabel}</p>
               </div>
             </CardContent>
           </Card>
@@ -197,7 +445,9 @@ const Dashboard = () => {
                     <td className="py-3 text-muted-foreground">{booking.checkIn}</td>
                     <td className="py-3 text-muted-foreground">{booking.checkOut}</td>
                     <td className="py-3">
-                      <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${statusColors[booking.status]}`}>
+                      <span
+                        className={`rounded-full px-2.5 py-1 text-xs font-medium ${statusColors[booking.status] || "bg-muted text-muted-foreground"}`}
+                      >
                         {booking.status}
                       </span>
                     </td>

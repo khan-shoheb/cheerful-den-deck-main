@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { useAppState } from "@/hooks/use-app-state";
@@ -6,8 +6,17 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/use-toast";
 import { useAuditLog } from "@/hooks/use-audit-log";
+import { canUseBackend } from "@/lib/hotel-api";
+import { supabase } from "@/lib/supabase";
 
 type PermissionPolicy = {
+  id: string;
+  title: string;
+  description: string;
+  enabled: boolean;
+};
+
+type PermissionPolicyDbRow = {
   id: string;
   title: string;
   description: string;
@@ -49,6 +58,28 @@ const SuperAdminPermissions = () => {
   const [form, setForm] = useState({ title: "", description: "" });
   const { logAction } = useAuditLog();
 
+  const fetchPoliciesFromBackend = async () => {
+    if (!canUseBackend() || !supabase) return;
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) return;
+
+    const { data, error } = await supabase
+      .from("sa_permission_policies")
+      .select("id,title,description,enabled")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: true });
+
+    if (error || !data) return;
+    setPolicies((data as PermissionPolicyDbRow[]).map((row) => ({ ...row })));
+  };
+
+  useEffect(() => {
+    void fetchPoliciesFromBackend();
+  }, []);
+
   const filteredPolicies = (policies || []).filter((policy) => {
     const query = searchTerm.trim().toLowerCase();
     const matchesSearch =
@@ -58,9 +89,34 @@ const SuperAdminPermissions = () => {
     return matchesSearch && matchesStatus;
   });
 
-  const handleToggle = (id: string, enabled: boolean) => {
+  const handleToggle = async (id: string, enabled: boolean) => {
+    const previousPolicies = policies || [];
     const policy = (policies || []).find((item) => item.id === id);
-    setPolicies((prev) => (prev || []).map((policy) => (policy.id === id ? { ...policy, enabled } : policy)));
+    setPolicies((prev) => (prev || []).map((item) => (item.id === id ? { ...item, enabled } : item)));
+
+    if (canUseBackend() && supabase) {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) {
+        setPolicies(previousPolicies);
+        toast({ title: "Session required", description: "Please login again.", variant: "destructive" });
+        return;
+      }
+
+      const { error } = await supabase
+        .from("sa_permission_policies")
+        .update({ enabled })
+        .eq("user_id", user.id)
+        .eq("id", id);
+
+      if (error) {
+        setPolicies(previousPolicies);
+        toast({ title: "Update failed", description: error.message, variant: "destructive" });
+        return;
+      }
+    }
+
     if (policy) {
       logAction({
         module: "superadmin-permissions",
@@ -75,7 +131,7 @@ const SuperAdminPermissions = () => {
     setForm({ title: policy.title, description: policy.description });
   };
 
-  const handleUpdate = () => {
+  const handleUpdate = async () => {
     const title = form.title.trim();
     const description = form.description.trim();
     if (!editingId || !title || !description) {
@@ -83,6 +139,7 @@ const SuperAdminPermissions = () => {
       return;
     }
 
+    const previousPolicies = policies || [];
     setPolicies((prev) =>
       (prev || []).map((policy) =>
         policy.id === editingId
@@ -94,6 +151,30 @@ const SuperAdminPermissions = () => {
           : policy,
       ),
     );
+
+    if (canUseBackend() && supabase) {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) {
+        setPolicies(previousPolicies);
+        toast({ title: "Session required", description: "Please login again.", variant: "destructive" });
+        return;
+      }
+
+      const { error } = await supabase
+        .from("sa_permission_policies")
+        .update({ title, description })
+        .eq("user_id", user.id)
+        .eq("id", editingId);
+
+      if (error) {
+        setPolicies(previousPolicies);
+        toast({ title: "Update failed", description: error.message, variant: "destructive" });
+        return;
+      }
+    }
+
     setEditingId(null);
     setForm({ title: "", description: "" });
     logAction({ module: "superadmin-permissions", action: "update", details: `Updated policy ${title}` });

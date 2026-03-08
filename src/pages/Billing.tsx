@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -33,6 +33,7 @@ type InvoiceStatus = "Paid" | "Pending" | "Overdue";
 
 type Invoice = {
   id: string;
+  dbId?: string;
   guest: string;
   taxableAmount: number;
   gstRate: number;
@@ -65,6 +66,13 @@ function formatDate(dateString: string) {
   const date = new Date(dateString);
   if (Number.isNaN(date.getTime())) return dateString;
   return date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "2-digit" });
+}
+
+function mapSupabaseStatus(value: string | null): InvoiceStatus {
+  const normalized = (value || "").trim().toLowerCase();
+  if (normalized === "paid") return "Paid";
+  if (normalized === "overdue") return "Overdue";
+  return "Pending";
 }
 
 type PaymentSettings = {
@@ -154,12 +162,64 @@ const Billing = () => {
 
   const razorpayKeyId = import.meta.env.VITE_RAZORPAY_KEY_ID as string | undefined;
   const configuredFunctionsUrl = import.meta.env.VITE_SUPABASE_FUNCTIONS_URL as string | undefined;
+  const proxiedFunctionsUrl =
+    import.meta.env.DEV && typeof window !== "undefined" ? `${window.location.origin}/supabase/functions/v1` : undefined;
   const inferredFunctionsUrl =
     import.meta.env.VITE_SUPABASE_URL && typeof import.meta.env.VITE_SUPABASE_URL === "string"
       ? `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`
       : undefined;
-  const functionsBaseUrl = configuredFunctionsUrl || inferredFunctionsUrl;
+  const functionsBaseUrl = configuredFunctionsUrl || proxiedFunctionsUrl || inferredFunctionsUrl;
   const isGatewayConfigured = Boolean(razorpayKeyId && functionsBaseUrl);
+
+  useEffect(() => {
+    if (!supabase) return;
+
+    let cancelled = false;
+
+    (async () => {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (!user) return;
+
+      const { data, error } = await supabase
+        .from("invoices")
+        .select("id,invoice_number,guest_name,taxable_amount,gst_rate,gst_amount,amount,due_date,paid_date,status,created_at")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false });
+
+      if (cancelled || error || !data) return;
+
+      setInvoices((prev) => {
+        const previousByDbId = new Map(prev.filter((invoice) => invoice.dbId).map((invoice) => [invoice.dbId as string, invoice]));
+
+        return data.map((row, index) => {
+          const existing = previousByDbId.get(row.id);
+          const amount = Number(row.amount ?? existing?.amount ?? 0);
+          const taxableAmount = Number(row.taxable_amount ?? existing?.taxableAmount ?? amount);
+          const gstRate = Number(row.gst_rate ?? existing?.gstRate ?? 0);
+          const gstAmount = Number(row.gst_amount ?? existing?.gstAmount ?? amount - taxableAmount);
+
+          return {
+            id: row.invoice_number || existing?.id || formatInvoiceId(data.length - index),
+            dbId: row.id,
+            guest: row.guest_name || existing?.guest || "Guest",
+            taxableAmount,
+            gstRate,
+            gstAmount,
+            amount,
+            date: row.paid_date || row.due_date || existing?.date || new Date().toISOString().slice(0, 10),
+            status: mapSupabaseStatus(row.status),
+          } satisfies Invoice;
+        });
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [setInvoices]);
 
   const ensureRazorpayScript = async () => {
     if (window.Razorpay) return;
@@ -196,8 +256,31 @@ const Billing = () => {
     };
   };
 
-  const updateInvoiceStatus = (invoiceId: string, status: InvoiceStatus) => {
-    setInvoices((prev) => prev.map((inv) => (inv.id === invoiceId ? { ...inv, status } : inv)));
+  const updateInvoiceStatus = async (invoiceId: string, status: InvoiceStatus) => {
+    let targetDbId: string | undefined;
+
+    setInvoices((prev) => {
+      const updated = prev.map((inv) => {
+        if (inv.id !== invoiceId) return inv;
+        targetDbId = inv.dbId;
+        return {
+          ...inv,
+          status,
+          date: status === "Paid" ? new Date().toISOString().slice(0, 10) : inv.date,
+        };
+      });
+      return updated;
+    });
+
+    if (!supabase || !targetDbId) return;
+
+    await supabase
+      .from("invoices")
+      .update({
+        status,
+        paid_date: status === "Paid" ? new Date().toISOString().slice(0, 10) : null,
+      })
+      .eq("id", targetDbId);
   };
 
   const handleGatewayPayment = async (invoice: Invoice) => {
@@ -271,7 +354,7 @@ const Billing = () => {
                 throw new Error(message || "Payment verification failed.");
               }
 
-              updateInvoiceStatus(invoice.id, "Paid");
+              await updateInvoiceStatus(invoice.id, "Paid");
               toast({
                 title: "Payment successful",
                 description: `Invoice ${invoice.id} has been marked as paid.`,
@@ -354,7 +437,7 @@ const Billing = () => {
     };
   }, [invoices]);
 
-  const handleCreateInvoice = (event: React.FormEvent) => {
+  const handleCreateInvoice = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!canSubmitNewInvoice) return;
 
@@ -379,7 +462,56 @@ const Billing = () => {
       status: newInvoice.status,
     };
 
+    if (supabase) {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (!user) {
+        toast({
+          title: "Session required",
+          description: "Please login again before creating invoices.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from("invoices")
+        .insert({
+          user_id: user.id,
+          invoice_number: next.id,
+          guest_name: next.guest,
+          booking_id: null,
+          taxable_amount: taxableAmount,
+          gst_rate: gstRate,
+          gst_amount: gstAmount,
+          amount: totalAmount,
+          due_date: newInvoice.date,
+          paid_date: newInvoice.status === "Paid" ? newInvoice.date : null,
+          status: newInvoice.status,
+        })
+        .select("id")
+        .single();
+
+      if (error || !data) {
+        toast({
+          title: "Invoice save failed",
+          description: "Unable to save invoice in backend. Please try again.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      next.dbId = data.id;
+    }
+
     setInvoices((prev) => [next, ...prev]);
+
+    toast({
+      title: "Invoice created",
+      description: `Invoice ${next.id} for ${next.guest} has been created successfully.`,
+    });
 
     if (settings.notifications?.paymentAlerts && settings.property?.email) {
       void sendNotificationEmail({

@@ -1,4 +1,4 @@
-import { ChangeEvent, useRef, useState } from "react";
+import { ChangeEvent, useEffect, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -7,6 +7,8 @@ import { useAppState } from "@/hooks/use-app-state";
 import { toast } from "@/components/ui/use-toast";
 import { useAuditLog } from "@/hooks/use-audit-log";
 import { useSuperAdminNotifications } from "@/hooks/use-superadmin-notifications";
+import { canUseBackend } from "@/lib/hotel-api";
+import { supabase } from "@/lib/supabase";
 
 type PropertyRow = {
   id: string;
@@ -25,6 +27,16 @@ type RecycleBinItem = {
   itemName: string;
   payload: unknown;
   deletedAt: string;
+};
+
+type SaPropertyDbRow = {
+  id: string;
+  name: string;
+  city: string;
+  admins_count: number;
+  occupancy: string;
+  health_status: PropertyRow["status"];
+  approval_status: "Pending" | "Approved" | "Rejected";
 };
 
 const defaultProperties: PropertyRow[] = [
@@ -50,11 +62,46 @@ const SuperAdminProperties = () => {
   const [approvalFilter, setApprovalFilter] = useState<"All" | "Pending" | "Approved" | "Rejected">("All");
   const [sortBy, setSortBy] = useState<"name-asc" | "name-desc" | "occupancy-desc">("name-asc");
   const [page, setPage] = useState(1);
+  const [isSaving, setIsSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [importReport, setImportReport] = useState<{ imported: number; rejected: number; reasons: string[] } | null>(null);
   const pageSize = 6;
   const { logAction } = useAuditLog();
   const { pushNotification } = useSuperAdminNotifications();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const mapDbPropertyToUi = (row: SaPropertyDbRow): PropertyRow => ({
+    id: row.id,
+    name: row.name,
+    city: row.city,
+    admins: Number(row.admins_count ?? 0),
+    occupancy: row.occupancy,
+    status: row.health_status,
+    approvalStatus: row.approval_status,
+  });
+
+  const fetchPropertiesFromBackend = async () => {
+    if (!canUseBackend() || !supabase) return;
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) return;
+
+    const { data, error } = await supabase
+      .from("sa_properties")
+      .select("id,name,city,admins_count,occupancy,health_status,approval_status")
+      .eq("user_id", user.id)
+      .order("updated_at", { ascending: false });
+
+    if (error || !data) return;
+    setProperties((data as SaPropertyDbRow[]).map(mapDbPropertyToUi));
+  };
+
+  useEffect(() => {
+    void fetchPropertiesFromBackend();
+  }, []);
 
   const filteredProperties = (properties || []).filter((property) => {
     const query = searchTerm.trim().toLowerCase();
@@ -80,7 +127,9 @@ const SuperAdminProperties = () => {
   const watchCount = (properties || []).filter((p) => p.status === "Watch").length;
   const reviewCount = (properties || []).filter((p) => p.status === "Needs Review").length;
 
-  const handleSaveProperty = () => {
+  const handleSaveProperty = async () => {
+    if (isSaving) return;
+
     const name = form.name.trim();
     const city = form.city.trim();
     const occupancy = form.occupancy.trim();
@@ -89,7 +138,10 @@ const SuperAdminProperties = () => {
       return;
     }
 
+    setIsSaving(true);
+
     if (editingId) {
+      const previous = properties || [];
       setProperties((prev) =>
         (prev || []).map((item) =>
           item.id === editingId
@@ -97,6 +149,41 @@ const SuperAdminProperties = () => {
             : item,
         ),
       );
+
+      if (canUseBackend() && supabase) {
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+
+        if (!user) {
+          setProperties(previous);
+          setIsSaving(false);
+          toast({ title: "Session required", description: "Please login again and retry.", variant: "destructive" });
+          return;
+        }
+
+        const { error } = await supabase
+          .from("sa_properties")
+          .update({
+            name,
+            city,
+            occupancy,
+            health_status: form.status,
+            approval_status: "Pending",
+          })
+          .eq("user_id", user.id)
+          .eq("id", editingId);
+
+        if (error) {
+          setProperties(previous);
+          setIsSaving(false);
+          toast({ title: "Update failed", description: error.message, variant: "destructive" });
+          return;
+        }
+
+        void fetchPropertiesFromBackend();
+      }
+
       setEditingId(null);
       logAction({ module: "superadmin-properties", action: "update", details: `Updated property ${name} (pending approval)` });
       pushNotification({
@@ -116,7 +203,43 @@ const SuperAdminProperties = () => {
         status: form.status,
         approvalStatus: "Pending",
       };
-      setProperties((prev) => [row, ...(prev || [])]);
+
+      if (canUseBackend() && supabase) {
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+
+        if (!user) {
+          setIsSaving(false);
+          toast({ title: "Session required", description: "Please login again and retry.", variant: "destructive" });
+          return;
+        }
+
+        const { data, error } = await supabase
+          .from("sa_properties")
+          .insert({
+            user_id: user.id,
+            name,
+            city,
+            admins_count: row.admins,
+            occupancy,
+            health_status: form.status,
+            approval_status: "Pending",
+          })
+          .select("id,name,city,admins_count,occupancy,health_status,approval_status")
+          .single();
+
+        if (error || !data) {
+          setIsSaving(false);
+          toast({ title: "Create failed", description: error?.message || "Unable to create property.", variant: "destructive" });
+          return;
+        }
+
+        setProperties((prev) => [mapDbPropertyToUi(data as SaPropertyDbRow), ...(prev || [])]);
+      } else {
+        setProperties((prev) => [row, ...(prev || [])]);
+      }
+
       logAction({ module: "superadmin-properties", action: "create", details: `Created property ${name} (pending approval)` });
       pushNotification({
         title: "New Property Added",
@@ -128,11 +251,57 @@ const SuperAdminProperties = () => {
     }
 
     setForm({ name: "", city: "", occupancy: "", status: "Watch" });
+    setIsSaving(false);
   };
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
+    if (deletingId) return;
+
     const item = (properties || []).find((property) => property.id === id);
-    setProperties((prev) => (prev || []).filter((item) => item.id !== id));
+    if (!item) return;
+
+    const previous = properties || [];
+    setDeletingId(id);
+    setProperties((prev) => (prev || []).filter((entry) => entry.id !== id));
+
+    if (canUseBackend() && supabase) {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (!user) {
+        setProperties(previous);
+        setDeletingId(null);
+        toast({ title: "Session required", description: "Please login again and retry.", variant: "destructive" });
+        return;
+      }
+
+      const { error: recycleError } = await supabase.from("sa_recycle_bin").insert({
+        user_id: user.id,
+        module: "properties",
+        item_id: item.id,
+        item_name: item.name,
+        payload: item,
+      });
+
+      if (recycleError) {
+        setProperties(previous);
+        setDeletingId(null);
+        toast({ title: "Delete failed", description: recycleError.message, variant: "destructive" });
+        return;
+      }
+
+      const { error: deleteError } = await supabase.from("sa_properties").delete().eq("user_id", user.id).eq("id", item.id);
+      if (deleteError) {
+        setProperties(previous);
+        setDeletingId(null);
+        toast({ title: "Delete failed", description: deleteError.message, variant: "destructive" });
+        return;
+      }
+
+      void fetchPropertiesFromBackend();
+    }
+
     if (item) {
       setRecycleBin((prev) => [
         {
@@ -157,6 +326,7 @@ const SuperAdminProperties = () => {
       setEditingId(null);
       setForm({ name: "", city: "", occupancy: "", status: "Watch" });
     }
+    setDeletingId(null);
   };
 
   const handleEdit = (row: PropertyRow) => {
@@ -255,7 +425,37 @@ const SuperAdminProperties = () => {
       } satisfies PropertyRow];
     });
 
-    setProperties((prev) => [...imported, ...(prev || [])]);
+    if (canUseBackend() && supabase && imported.length > 0) {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (!user) {
+        toast({ title: "Session required", description: "Please login again before import.", variant: "destructive" });
+        return;
+      }
+
+      const payload = imported.map((item) => ({
+        user_id: user.id,
+        name: item.name,
+        city: item.city,
+        admins_count: item.admins,
+        occupancy: item.occupancy,
+        health_status: item.status,
+        approval_status: item.approvalStatus || "Pending",
+      }));
+
+      const { error } = await supabase.from("sa_properties").insert(payload);
+      if (error) {
+        toast({ title: "Import failed", description: error.message, variant: "destructive" });
+        return;
+      }
+
+      await fetchPropertiesFromBackend();
+    } else {
+      setProperties((prev) => [...imported, ...(prev || [])]);
+    }
+
     logAction({ module: "superadmin-properties", action: "import", details: `Imported ${imported.length} properties from CSV` });
     pushNotification({
       title: "Property CSV Imported",
@@ -321,7 +521,7 @@ const SuperAdminProperties = () => {
             <option value="Needs Review">Needs Review</option>
           </select>
           <div className="flex gap-2">
-            <Button onClick={handleSaveProperty}>{editingId ? "Update" : "Save"}</Button>
+            <Button onClick={handleSaveProperty} disabled={isSaving}>{isSaving ? "Saving..." : editingId ? "Update" : "Save"}</Button>
             {editingId && (
               <Button variant="outline" onClick={handleCancelEdit}>
                 Cancel
@@ -428,8 +628,8 @@ const SuperAdminProperties = () => {
                         <Button variant="outline" size="sm" onClick={() => handleEdit(property)}>
                           Edit
                         </Button>
-                        <Button variant="outline" size="sm" onClick={() => handleDelete(property.id)}>
-                          Delete
+                        <Button variant="outline" size="sm" disabled={deletingId === property.id} onClick={() => handleDelete(property.id)}>
+                          {deletingId === property.id ? "Deleting..." : "Delete"}
                         </Button>
                       </div>
                     </td>

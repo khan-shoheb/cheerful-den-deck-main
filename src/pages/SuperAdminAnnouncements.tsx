@@ -1,4 +1,4 @@
-import { ChangeEvent, useState } from "react";
+import { ChangeEvent, useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -7,6 +7,8 @@ import { useAppState } from "@/hooks/use-app-state";
 import { toast } from "@/components/ui/use-toast";
 import { useAuditLog } from "@/hooks/use-audit-log";
 import { useSuperAdminNotifications } from "@/hooks/use-superadmin-notifications";
+import { canUseBackend } from "@/lib/hotel-api";
+import { supabase } from "@/lib/supabase";
 
 type Announcement = {
   id: string;
@@ -24,6 +26,15 @@ type RecycleBinItem = {
   itemName: string;
   payload: unknown;
   deletedAt: string;
+};
+
+type SaAnnouncementDbRow = {
+  id: string;
+  title: string;
+  audience: string;
+  publish_date: string;
+  priority: Announcement["priority"];
+  approval_status: "Pending" | "Approved" | "Rejected";
 };
 
 const defaultAnnouncements: Announcement[] = [
@@ -66,11 +77,45 @@ const SuperAdminAnnouncements = () => {
   const [approvalFilter, setApprovalFilter] = useState<"All" | "Pending" | "Approved" | "Rejected">("All");
   const [sortBy, setSortBy] = useState<"newest" | "oldest">("newest");
   const [page, setPage] = useState(1);
+  const [isSaving, setIsSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [importReport, setImportReport] = useState<{ imported: number; rejected: number; reasons: string[] } | null>(null);
   const pageSize = 5;
   const { logAction } = useAuditLog();
   const { pushNotification } = useSuperAdminNotifications();
   const fileInputId = "sa-announcements-csv";
+
+  const mapDbAnnouncementToUi = (row: SaAnnouncementDbRow): Announcement => ({
+    id: row.id,
+    title: row.title,
+    audience: row.audience,
+    date: row.publish_date,
+    priority: row.priority,
+    approvalStatus: row.approval_status,
+  });
+
+  const fetchAnnouncementsFromBackend = async () => {
+    if (!canUseBackend() || !supabase) return;
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) return;
+
+    const { data, error } = await supabase
+      .from("sa_announcements")
+      .select("id,title,audience,publish_date,priority,approval_status")
+      .eq("user_id", user.id)
+      .order("updated_at", { ascending: false });
+
+    if (error || !data) return;
+    setAnnouncements((data as SaAnnouncementDbRow[]).map(mapDbAnnouncementToUi));
+  };
+
+  useEffect(() => {
+    void fetchAnnouncementsFromBackend();
+  }, []);
 
   const filteredAnnouncements = (announcements || []).filter((item) => {
     const query = searchTerm.trim().toLowerCase();
@@ -97,7 +142,9 @@ const SuperAdminAnnouncements = () => {
   const safePage = Math.min(page, totalPages);
   const pagedAnnouncements = sortedAnnouncements.slice((safePage - 1) * pageSize, safePage * pageSize);
 
-  const handleSave = () => {
+  const handleSave = async () => {
+    if (isSaving) return;
+
     const title = form.title.trim();
     const audience = form.audience.trim();
     if (!title || !audience) {
@@ -105,16 +152,54 @@ const SuperAdminAnnouncements = () => {
       return;
     }
 
+    setIsSaving(true);
+
     const today = new Date();
     const date = today.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
-    if (editingId) {
-      setAnnouncements((prev) =>
-        (prev || []).map((item) =>
-          item.id === editingId
-            ? { ...item, title, audience, priority: form.priority, approvalStatus: "Pending" }
-            : item,
-        ),
-      );
+    try {
+      if (editingId) {
+        const prevAnnouncements = announcements || [];
+
+        // Apply local update first so the UI feels instant.
+        setAnnouncements((prev) =>
+          (prev || []).map((item) =>
+            item.id === editingId
+              ? { ...item, title, audience, priority: form.priority, approvalStatus: "Pending" }
+              : item,
+          ),
+        );
+
+      if (canUseBackend() && supabase) {
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+
+        if (!user) {
+          setAnnouncements(prevAnnouncements);
+          toast({ title: "Session required", description: "Please login again and retry.", variant: "destructive" });
+          return;
+        }
+
+        const { error } = await supabase
+          .from("sa_announcements")
+          .update({
+            title,
+            audience,
+            priority: form.priority,
+            approval_status: "Pending",
+          })
+          .eq("user_id", user.id)
+          .eq("id", editingId);
+
+        if (error) {
+          setAnnouncements(prevAnnouncements);
+          toast({ title: "Update failed", description: error.message, variant: "destructive" });
+          return;
+        }
+
+        void fetchAnnouncementsFromBackend();
+      }
+
       logAction({ module: "superadmin-announcements", action: "update", details: `Updated announcement ${title} (pending approval)` });
       pushNotification({
         title: "Announcement Updated",
@@ -124,57 +209,142 @@ const SuperAdminAnnouncements = () => {
       });
       toast({ title: "Announcement updated", description: "Announcement queued for approval." });
       setEditingId(null);
-    } else {
-      const newItem: Announcement = {
-        id: crypto.randomUUID(),
-        title,
-        audience,
-        date,
-        priority: form.priority,
-        approvalStatus: "Pending",
-      };
+      } else {
+        const newItem: Announcement = {
+          id: crypto.randomUUID(),
+          title,
+          audience,
+          date,
+          priority: form.priority,
+          approvalStatus: "Pending",
+        };
 
-      setAnnouncements((prev) => [newItem, ...(prev || [])]);
-      logAction({ module: "superadmin-announcements", action: "create", details: `Created announcement ${title} (pending approval)` });
-      pushNotification({
-        title: "Announcement Created",
-        message: `${title} created and queued for approval.`,
-        module: "superadmin-announcements",
-        severity: "info",
-      });
-      toast({ title: "Announcement added", description: "Announcement queued for approval." });
+        if (canUseBackend() && supabase) {
+          const {
+            data: { user },
+          } = await supabase.auth.getUser();
+
+          if (!user) {
+            toast({ title: "Session required", description: "Please login again and retry.", variant: "destructive" });
+            return;
+          }
+
+          const { data, error } = await supabase
+            .from("sa_announcements")
+            .insert({
+              user_id: user.id,
+              title,
+              audience,
+              publish_date: date,
+              priority: form.priority,
+              approval_status: "Pending",
+            })
+            .select("id,title,audience,publish_date,priority,approval_status")
+            .single();
+
+          if (error || !data) {
+            toast({ title: "Create failed", description: error?.message || "Unable to create announcement.", variant: "destructive" });
+            return;
+          }
+
+          setAnnouncements((prev) => [mapDbAnnouncementToUi(data as SaAnnouncementDbRow), ...(prev || [])]);
+        } else {
+          setAnnouncements((prev) => [newItem, ...(prev || [])]);
+        }
+
+        logAction({ module: "superadmin-announcements", action: "create", details: `Created announcement ${title} (pending approval)` });
+        pushNotification({
+          title: "Announcement Created",
+          message: `${title} created and queued for approval.`,
+          module: "superadmin-announcements",
+          severity: "info",
+        });
+        toast({ title: "Announcement added", description: "Announcement queued for approval." });
+      }
+
+      setForm({ title: "", audience: "", priority: "Medium" });
+    } finally {
+      setIsSaving(false);
     }
-
-    setForm({ title: "", audience: "", priority: "Medium" });
   };
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
+    if (deletingId) return;
+
     const item = (announcements || []).find((entry) => entry.id === id);
-    setAnnouncements((prev) => (prev || []).filter((item) => item.id !== id));
-    if (item) {
-      setRecycleBin((prev) => [
-        {
-          id: crypto.randomUUID(),
-          module: "announcements",
-          itemId: item.id,
-          itemName: item.title,
-          payload: item,
-          deletedAt: new Date().toISOString(),
-        },
-        ...(prev || []),
-      ]);
-      logAction({ module: "superadmin-announcements", action: "delete", details: `Deleted announcement ${item.title} to recycle bin` });
-      pushNotification({
-        title: "Announcement Deleted",
-        message: `${item.title} moved to recycle bin.`,
-        module: "superadmin-announcements",
-        severity: "warning",
+    if (!item) return;
+
+    const previousAnnouncements = announcements || [];
+    setDeletingId(id);
+    // Remove immediately, then sync with backend.
+    setAnnouncements((prev) => (prev || []).filter((entry) => entry.id !== id));
+
+    if (canUseBackend() && supabase) {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (!user) {
+        setAnnouncements(previousAnnouncements);
+        setDeletingId(null);
+        toast({ title: "Session required", description: "Please login again and retry.", variant: "destructive" });
+        return;
+      }
+
+      const { error: recycleError } = await supabase.from("sa_recycle_bin").insert({
+        user_id: user.id,
+        module: "announcements",
+        item_id: item.id,
+        item_name: item.title,
+        payload: item,
       });
+
+      if (recycleError) {
+        setAnnouncements(previousAnnouncements);
+        setDeletingId(null);
+        toast({ title: "Delete failed", description: recycleError.message, variant: "destructive" });
+        return;
+      }
+
+      const { error: deleteError } = await supabase
+        .from("sa_announcements")
+        .delete()
+        .eq("user_id", user.id)
+        .eq("id", item.id);
+
+      if (deleteError) {
+        setAnnouncements(previousAnnouncements);
+        setDeletingId(null);
+        toast({ title: "Delete failed", description: deleteError.message, variant: "destructive" });
+        return;
+      }
+
+      void fetchAnnouncementsFromBackend();
     }
+
+    setRecycleBin((prev) => [
+      {
+        id: crypto.randomUUID(),
+        module: "announcements",
+        itemId: item.id,
+        itemName: item.title,
+        payload: item,
+        deletedAt: new Date().toISOString(),
+      },
+      ...(prev || []),
+    ]);
+    logAction({ module: "superadmin-announcements", action: "delete", details: `Deleted announcement ${item.title} to recycle bin` });
+    pushNotification({
+      title: "Announcement Deleted",
+      message: `${item.title} moved to recycle bin.`,
+      module: "superadmin-announcements",
+      severity: "warning",
+    });
     if (editingId === id) {
       setEditingId(null);
       setForm({ title: "", audience: "", priority: "Medium" });
     }
+    setDeletingId(null);
   };
 
   const handleEdit = (item: Announcement) => {
@@ -266,7 +436,40 @@ const SuperAdminAnnouncements = () => {
       } satisfies Announcement];
     });
 
-    setAnnouncements((prev) => [...imported, ...(prev || [])]);
+    if (canUseBackend() && supabase && imported.length > 0) {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (!user) {
+        toast({ title: "Session required", description: "Please login again before import.", variant: "destructive" });
+        return;
+      }
+
+      const payload = imported.map((item) => ({
+        user_id: user.id,
+        title: item.title,
+        audience: item.audience,
+        publish_date: item.date,
+        priority: item.priority,
+        approval_status: item.approvalStatus || "Pending",
+      }));
+
+      const { data, error } = await supabase
+        .from("sa_announcements")
+        .insert(payload)
+        .select("id,title,audience,publish_date,priority,approval_status");
+      if (error || !data) {
+        toast({ title: "Import failed", description: error.message, variant: "destructive" });
+        return;
+      }
+
+      const mapped = (data as SaAnnouncementDbRow[]).map(mapDbAnnouncementToUi);
+      setAnnouncements((prev) => [...mapped, ...(prev || [])]);
+    } else {
+      setAnnouncements((prev) => [...imported, ...(prev || [])]);
+    }
+
     logAction({ module: "superadmin-announcements", action: "import", details: `Imported ${imported.length} announcements from CSV` });
     pushNotification({
       title: "Announcement CSV Imported",
@@ -332,7 +535,9 @@ const SuperAdminAnnouncements = () => {
             <option value="Low">Low</option>
           </select>
           <div className="md:col-span-4 flex gap-2">
-            <Button onClick={handleSave}>{editingId ? "Update Announcement" : "Publish Announcement"}</Button>
+            <Button onClick={handleSave} disabled={isSaving}>
+              {isSaving ? "Saving..." : editingId ? "Update Announcement" : "Publish Announcement"}
+            </Button>
             {editingId && (
               <Button variant="outline" onClick={handleCancel}>
                 Cancel
@@ -421,8 +626,8 @@ const SuperAdminAnnouncements = () => {
                   <Button variant="outline" size="sm" onClick={() => handleEdit(item)}>
                     Edit
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => handleDelete(item.id)}>
-                    Delete
+                  <Button variant="outline" size="sm" disabled={deletingId === item.id} onClick={() => handleDelete(item.id)}>
+                    {deletingId === item.id ? "Deleting..." : "Delete"}
                   </Button>
                 </div>
               </div>

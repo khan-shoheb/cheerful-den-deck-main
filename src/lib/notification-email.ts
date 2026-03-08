@@ -8,12 +8,14 @@ type NotificationEmailPayload = {
 };
 
 const configuredFunctionsUrl = import.meta.env.VITE_SUPABASE_FUNCTIONS_URL as string | undefined;
+const proxiedFunctionsUrl =
+  import.meta.env.DEV && typeof window !== "undefined" ? `${window.location.origin}/supabase/functions/v1` : undefined;
 const inferredFunctionsUrl =
   import.meta.env.VITE_SUPABASE_URL && typeof import.meta.env.VITE_SUPABASE_URL === "string"
     ? `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`
     : undefined;
 
-const functionsBaseUrl = configuredFunctionsUrl || inferredFunctionsUrl;
+const functionsBaseUrl = configuredFunctionsUrl || proxiedFunctionsUrl || inferredFunctionsUrl;
 
 const getHeaders = async () => {
   if (!supabase) {

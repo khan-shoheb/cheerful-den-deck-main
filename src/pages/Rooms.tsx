@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,27 +19,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { BedDouble, Search, Plus } from "lucide-react";
+import { BedDouble, Search, Plus, Pencil, Trash2 } from "lucide-react";
 import { useAppState } from "@/hooks/use-app-state";
 import { formatINR } from "@/lib/currency";
 import { toast } from "@/components/ui/use-toast";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import { useAuditLog } from "@/hooks/use-audit-log";
+import { canUseBackend, createRoom, deleteRoom, fetchRooms, updateRoom, type RoomRecord, type RoomStatus } from "@/lib/hotel-api";
 
-type RoomStatus = "available" | "occupied" | "maintenance" | "cleaning";
-
-interface Room {
-  id: string;
-  number: string;
-  type: string;
-  floor: number;
-  status: RoomStatus;
-  price: number;
-  guest?: string;
-  imageUrl?: string;
-}
-
-const initialRooms: Room[] = [
+const initialRooms: RoomRecord[] = [
   { id: "1", number: "101", type: "Standard", floor: 1, status: "occupied", price: 120, guest: "Sarah Johnson" },
   { id: "2", number: "102", type: "Standard", floor: 1, status: "available", price: 120 },
   { id: "3", number: "103", type: "Deluxe", floor: 1, status: "cleaning", price: 180 },
@@ -62,12 +50,14 @@ const statusConfig: Record<RoomStatus, { label: string; className: string }> = {
 };
 
 const Rooms = () => {
-  const [rooms, setRooms] = useAppState<Room[]>("rm_rooms", initialRooms);
+  const [rooms, setRooms] = useAppState<RoomRecord[]>("rm_rooms", initialRooms);
   const { logAction } = useAuditLog();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<RoomStatus | "all">("all");
   const [addOpen, setAddOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [isUploadingImage, setIsUploadingImage] = useState(false);
+  const [isSavingRoom, setIsSavingRoom] = useState(false);
   const [newRoomImageFile, setNewRoomImageFile] = useState<File | null>(null);
   const [newRoomImagePreview, setNewRoomImagePreview] = useState<string | null>(null);
   const [newRoom, setNewRoom] = useState<{
@@ -85,6 +75,23 @@ const Rooms = () => {
     price: "120",
     guest: "",
   });
+  const [editRoom, setEditRoom] = useState<RoomRecord | null>(null);
+
+  useEffect(() => {
+    if (!canUseBackend()) return;
+
+    let cancelled = false;
+
+    (async () => {
+      const remoteRooms = await fetchRooms();
+      if (cancelled) return;
+      setRooms(remoteRooms);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [setRooms]);
 
   const canSubmitNewRoom =
     newRoom.number.trim().length > 0 &&
@@ -164,7 +171,9 @@ const Rooms = () => {
 
   const handleCreateRoom = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!canSubmitNewRoom) return;
+    if (!canSubmitNewRoom || isSavingRoom) return;
+
+    setIsSavingRoom(true);
 
     const id =
       typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -189,7 +198,7 @@ const Rooms = () => {
       setIsUploadingImage(false);
     }
 
-    const nextRoom: Room = {
+    const nextRoom: RoomRecord = {
       id,
       number: newRoom.number.trim(),
       type: newRoom.type.trim(),
@@ -200,7 +209,21 @@ const Rooms = () => {
       imageUrl,
     };
 
+    if (canUseBackend()) {
+      const isCreated = await createRoom(nextRoom);
+      if (!isCreated) {
+        setIsSavingRoom(false);
+        toast({
+          title: "Room save failed",
+          description: "Unable to save room in backend. Please re-login and try again.",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
     setRooms((prev) => [nextRoom, ...prev]);
+
     logAction({
       module: "rooms",
       action: "room_created",
@@ -218,6 +241,53 @@ const Rooms = () => {
       price: "120",
       guest: "",
     });
+
+    toast({
+      title: "Room created",
+      description: `Room ${nextRoom.number} has been created successfully.`,
+    });
+    setIsSavingRoom(false);
+  };
+
+  const handleDeleteRoom = async (room: RoomRecord) => {
+    if (!window.confirm(`Delete room ${room.number}?`)) return;
+
+    if (canUseBackend()) {
+      const ok = await deleteRoom(room.id);
+      if (!ok) {
+        toast({
+          title: "Delete failed",
+          description: "Unable to delete room from backend.",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
+    setRooms((prev) => prev.filter((r) => r.id !== room.id));
+    toast({ title: "Room deleted", description: `Room ${room.number} deleted successfully.` });
+  };
+
+  const handleSaveEditRoom = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!editRoom) return;
+
+    if (canUseBackend()) {
+      const ok = await updateRoom(editRoom);
+      if (!ok) {
+        toast({
+          title: "Update failed",
+          description: "Unable to update room in backend.",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
+    setRooms((prev) => prev.map((r) => (r.id === editRoom.id ? editRoom : r)));
+    setEditOpen(false);
+    setEditRoom(null);
+    toast({ title: "Room updated", description: `Room ${editRoom.number} updated successfully.` });
   };
 
   const counts = rooms.reduce(
@@ -358,11 +428,98 @@ const Rooms = () => {
                 <Button type="button" variant="outline" onClick={() => setAddOpen(false)}>
                   Cancel
                 </Button>
-                <Button type="submit" disabled={!canSubmitNewRoom || isUploadingImage}>
-                  {isUploadingImage ? "Uploading..." : "Add Room"}
+                <Button type="submit" disabled={!canSubmitNewRoom || isUploadingImage || isSavingRoom}>
+                  {isUploadingImage ? "Uploading..." : isSavingRoom ? "Saving..." : "Add Room"}
                 </Button>
               </DialogFooter>
             </form>
+          </DialogContent>
+        </Dialog>
+        <Dialog
+          open={editOpen}
+          onOpenChange={(open) => {
+            setEditOpen(open);
+            if (!open) setEditRoom(null);
+          }}
+        >
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Edit Room</DialogTitle>
+            </DialogHeader>
+
+            {editRoom && (
+              <form onSubmit={handleSaveEditRoom} className="space-y-4">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-room-number">Room Number</Label>
+                    <Input
+                      id="edit-room-number"
+                      value={editRoom.number}
+                      onChange={(e) => setEditRoom((prev) => (prev ? { ...prev, number: e.target.value } : prev))}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-room-type">Type</Label>
+                    <Input
+                      id="edit-room-type"
+                      value={editRoom.type}
+                      onChange={(e) => setEditRoom((prev) => (prev ? { ...prev, type: e.target.value } : prev))}
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-room-floor">Floor</Label>
+                    <Input
+                      id="edit-room-floor"
+                      inputMode="numeric"
+                      value={String(editRoom.floor)}
+                      onChange={(e) =>
+                        setEditRoom((prev) => (prev ? { ...prev, floor: Number(e.target.value) || 1 } : prev))
+                      }
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Status</Label>
+                    <Select
+                      value={editRoom.status}
+                      onValueChange={(value) =>
+                        setEditRoom((prev) => (prev ? { ...prev, status: value as RoomStatus } : prev))
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select status" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="available">Available</SelectItem>
+                        <SelectItem value="occupied">Occupied</SelectItem>
+                        <SelectItem value="maintenance">Maintenance</SelectItem>
+                        <SelectItem value="cleaning">Cleaning</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-room-price">Rate</Label>
+                    <Input
+                      id="edit-room-price"
+                      inputMode="decimal"
+                      value={String(editRoom.price)}
+                      onChange={(e) =>
+                        setEditRoom((prev) => (prev ? { ...prev, price: Number(e.target.value) || 0 } : prev))
+                      }
+                    />
+                  </div>
+                </div>
+
+                <DialogFooter>
+                  <Button type="button" variant="outline" onClick={() => setEditOpen(false)}>
+                    Cancel
+                  </Button>
+                  <Button type="submit">Save</Button>
+                </DialogFooter>
+              </form>
+            )}
           </DialogContent>
         </Dialog>
       </div>
@@ -466,6 +623,29 @@ const Rooms = () => {
                       <span className="font-medium text-foreground">{room.guest}</span>
                     </div>
                   )}
+                </div>
+                <div className="mt-4 flex items-center gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="gap-1"
+                    onClick={() => {
+                      setEditRoom(room);
+                      setEditOpen(true);
+                    }}
+                  >
+                    <Pencil className="h-3.5 w-3.5" /> Edit
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="destructive"
+                    className="gap-1"
+                    onClick={() => void handleDeleteRoom(room)}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" /> Delete
+                  </Button>
                 </div>
               </CardContent>
             </Card>

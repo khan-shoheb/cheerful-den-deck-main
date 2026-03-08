@@ -2,6 +2,27 @@ import React, { createContext, useContext, useEffect, useMemo, useState, useCall
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
 export type AppRole = "admin" | "superadmin" | "manager" | "frontdesk" | "housekeeping" | "accountant";
+type LoginResult = { success: true } | { success: false; error: string };
+
+const toFriendlyAuthError = (message: string, loginAs: "admin" | "superadmin"): string => {
+  const lower = message.toLowerCase();
+
+  if (lower.includes("invalid login credentials")) {
+    return loginAs === "superadmin"
+      ? "Invalid login credentials. Ensure this user exists in Supabase Auth Users and password is correct."
+      : "Invalid login credentials. Please verify email/password for this Supabase project.";
+  }
+
+  if (lower.includes("email not confirmed")) {
+    return "Email is not confirmed yet. Confirm the account from Supabase Auth before login.";
+  }
+
+  if (lower.includes("too many requests")) {
+    return "Too many login attempts. Please wait a minute and try again.";
+  }
+
+  return message;
+};
 
 const normalizeRole = (value: unknown): AppRole => {
   const roleValue = typeof value === "string" ? value.trim().toLowerCase() : "";
@@ -35,7 +56,11 @@ interface AuthContextType {
   isAuthenticated: boolean;
   authUserId: string | null;
   user: { name: string; role: AppRole; email?: string } | null;
-  login: (email: string, password: string, loginAs?: "admin" | "superadmin") => Promise<boolean>;
+  login: (
+    email: string,
+    password: string,
+    loginAs?: "admin" | "superadmin",
+  ) => Promise<LoginResult>;
   logout: () => Promise<void>;
 }
 
@@ -47,8 +72,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const useSupabase = useMemo(() => isSupabaseConfigured && Boolean(supabase), []);
   const MOCK_SUPERADMIN_EMAIL = "superadmin@room.com";
   const MOCK_SUPERADMIN_PASSWORD = "Super@123";
-  const MOCK_ADMIN_EMAIL = "sujalpatne583@gmail.com";
-  const MOCK_ADMIN_PASSWORD = "Sujal@123";
+  const MOCK_ADMIN_EMAIL = "admin@room.com";
+  const MOCK_ADMIN_PASSWORD = "Admin@123";
 
   const [isAuthenticated, setIsAuthenticated] = useState(() => {
     return useSupabase ? false : localStorage.getItem("rm_auth") === "true";
@@ -121,18 +146,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [useSupabase]);
 
-  const login = useCallback(
-    async (email: string, password: string, loginAs: "admin" | "superadmin" = "admin") => {
+  const login = useCallback<AuthContextType["login"]>(
+    async (email: string, password: string, loginAs: "admin" | "superadmin" = "admin"): Promise<LoginResult> => {
       const normalizedEmail = email.trim().toLowerCase();
       const normalizedPassword = password.trim();
-      const canUseLocalSuperadminFallback =
-        loginAs === "superadmin" &&
-        normalizedEmail === MOCK_SUPERADMIN_EMAIL &&
-        normalizedPassword === MOCK_SUPERADMIN_PASSWORD;
-      const canUseLocalAdminFallback =
-        loginAs === "admin" &&
-        normalizedEmail === MOCK_ADMIN_EMAIL &&
-        normalizedPassword === MOCK_ADMIN_PASSWORD;
+
+      const applyLocalMockSession = (role: AppRole) => {
+        const userData = { name: normalizedEmail.split("@")[0], role, email: normalizedEmail };
+        setIsAuthenticated(true);
+        setAuthUserId(`local-${role}`);
+        setUser(userData);
+        localStorage.setItem("rm_auth", "true");
+        localStorage.setItem("rm_user", JSON.stringify(userData));
+        localStorage.setItem("rm_auth_source", "local-mock");
+      };
 
       if (useSupabase) {
         const { data, error } = await supabase!.auth.signInWithPassword({
@@ -140,25 +167,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           password: normalizedPassword,
         });
         if (error) {
-          if (canUseLocalSuperadminFallback) {
-            const userData = { name: "superadmin", role: "superadmin" as AppRole, email: normalizedEmail };
-            setIsAuthenticated(true);
-            setAuthUserId("local-superadmin");
-            setUser(userData);
-            localStorage.setItem("rm_auth", "true");
-            localStorage.setItem("rm_user", JSON.stringify(userData));
-            return true;
-          }
-          if (canUseLocalAdminFallback) {
-            const userData = { name: "sujal", role: "admin" as AppRole, email: normalizedEmail };
-            setIsAuthenticated(true);
-            setAuthUserId("local-admin");
-            setUser(userData);
-            localStorage.setItem("rm_auth", "true");
-            localStorage.setItem("rm_user", JSON.stringify(userData));
-            return true;
-          }
-          return false;
+          return {
+            success: false,
+            error: toFriendlyAuthError(error.message || "Invalid credentials", loginAs),
+          };
         }
 
         const role = resolveRole({
@@ -166,34 +178,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           roleFromAppMeta: data.user?.app_metadata?.role,
           email: data.user?.email,
         });
+        localStorage.setItem("rm_auth_source", "supabase");
         const isRoleAllowed = loginAs === "superadmin" ? role === "superadmin" : role !== "superadmin";
         if (!isRoleAllowed) {
           await supabase!.auth.signOut();
-
-          // Fallback for demo/dev when metadata is not propagated yet.
-          if (canUseLocalSuperadminFallback) {
-            const userData = { name: "superadmin", role: "superadmin" as AppRole, email: normalizedEmail };
-            setIsAuthenticated(true);
-            setAuthUserId("local-superadmin");
-            setUser(userData);
-            localStorage.setItem("rm_auth", "true");
-            localStorage.setItem("rm_user", JSON.stringify(userData));
-            return true;
-          }
-          if (canUseLocalAdminFallback) {
-            const userData = { name: "sujal", role: "admin" as AppRole, email: normalizedEmail };
-            setIsAuthenticated(true);
-            setAuthUserId("local-admin");
-            setUser(userData);
-            localStorage.setItem("rm_auth", "true");
-            localStorage.setItem("rm_user", JSON.stringify(userData));
-            return true;
-          }
-
-          return false;
+          return {
+            success: false,
+            error:
+              loginAs === "superadmin"
+                ? "This account is not a superadmin."
+                : "This account cannot be used for admin login.",
+          };
         }
 
-        return true;
+        return { success: true };
       }
 
       // Frontend-only mock login (fallback)
@@ -202,18 +200,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const isSuperAdminMatch =
           normalizedEmail === MOCK_SUPERADMIN_EMAIL && normalizedPassword === MOCK_SUPERADMIN_PASSWORD;
         const role: AppRole = isSuperAdminMatch ? "superadmin" : "admin";
-        if (loginAs === "admin" && !isAdminMatch) return false;
+        if (loginAs === "admin" && !isAdminMatch) {
+          return { success: false, error: "Invalid credentials" };
+        }
         const isRoleAllowed = loginAs === "superadmin" ? role === "superadmin" : role !== "superadmin";
-        if (!isRoleAllowed) return false;
+        if (!isRoleAllowed) {
+          return { success: false, error: "Role mismatch for selected login type." };
+        }
 
-        const userData = { name: normalizedEmail.split("@")[0], role, email: normalizedEmail };
-        setIsAuthenticated(true);
-        setUser(userData);
-        localStorage.setItem("rm_auth", "true");
-        localStorage.setItem("rm_user", JSON.stringify(userData));
-        return true;
+        applyLocalMockSession(role);
+        return { success: true };
       }
-      return false;
+
+      return { success: false, error: "Invalid credentials" };
     },
     [useSupabase],
   );
@@ -227,6 +226,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setUser(null);
     localStorage.removeItem("rm_auth");
     localStorage.removeItem("rm_user");
+    localStorage.removeItem("rm_auth_source");
   }, [useSupabase]);
 
   return (

@@ -28,7 +28,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, Plus } from "lucide-react";
+import { Search, Plus, Pencil, Trash2 } from "lucide-react";
 
 type BookingStatus = "Checked In" | "Checked Out" | "Confirmed" | "Pending" | "Cancelled";
 
@@ -158,7 +158,10 @@ const Bookings = () => {
   const { logAction } = useAuditLog();
   const [search, setSearch] = useState("");
   const [addOpen, setAddOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editingBooking, setEditingBooking] = useState<Booking | null>(null);
   const [dateRange, setDateRange] = useState<DateRange | undefined>();
+  const [editDateRange, setEditDateRange] = useState<DateRange | undefined>();
   const [newBooking, setNewBooking] = useState<{
     guest: string;
     room: string;
@@ -320,6 +323,11 @@ const Bookings = () => {
 
     setBookings((prev) => [next, ...prev]);
 
+    if (next.status === "Checked In") {
+      updateRoomOccupancy({ roomLabel: next.room, guest: next.guest, occupied: true });
+      await syncRoomOccupancyInBackend({ roomLabel: next.room, guest: next.guest, occupied: true });
+    }
+
     logAction({
       module: "bookings",
       action: "booking_created",
@@ -349,6 +357,27 @@ const Bookings = () => {
       total: "",
       status: "Confirmed",
     });
+  };
+
+  const syncRoomOccupancyInBackend = async (params: { roomLabel: string; guest: string; occupied: boolean }) => {
+    if (!supabase) return;
+    const roomNumber = getRoomNumberFromLabel(params.roomLabel);
+    if (!roomNumber) return;
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) return;
+
+    await supabase
+      .from("rooms")
+      .update({
+        status: params.occupied ? "occupied" : "available",
+        guest_name: params.occupied ? params.guest : null,
+      })
+      .eq("user_id", user.id)
+      .eq("name", roomNumber);
   };
 
   const updateRoomOccupancy = (params: { roomLabel: string; guest: string; occupied: boolean }) => {
@@ -381,9 +410,18 @@ const Bookings = () => {
     updateRoomOccupancy({ roomLabel: targetBooking.room, guest: targetBooking.guest, occupied: true });
     setBookings((prev) => prev.map((b) => (b.id === bookingId ? { ...b, status: "Checked In" } : b)));
 
+    toast({
+      title: "Checked in",
+      description: `${targetBooking.id} for ${targetBooking.guest} has been checked in.`,
+    });
+
     // Update in Supabase
-    const { data: { user } } = await supabase.auth.getUser();
-    if (user) {
+    if (supabase) {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (user) {
       let query = supabase
         .from('bookings')
         .update({ status: 'Checked In' })
@@ -398,8 +436,11 @@ const Bookings = () => {
           .eq('check_out', targetBooking.checkOut);
       }
 
-      await query;
+        await query;
+      }
     }
+
+    await syncRoomOccupancyInBackend({ roomLabel: targetBooking.room, guest: targetBooking.guest, occupied: true });
 
     logAction({
       module: "bookings",
@@ -425,9 +466,21 @@ const Bookings = () => {
     updateRoomOccupancy({ roomLabel: targetBooking.room, guest: targetBooking.guest, occupied: false });
     setBookings((prev) => prev.map((b) => (b.id === bookingId ? { ...b, status: "Checked Out" } : b)));
 
+    toast({
+      title: "Checked out",
+      description: `${targetBooking.id} for ${targetBooking.guest} has been checked out.`,
+    });
+
     // Update in Supabase
-    const { data: { user } } = await supabase.auth.getUser();
-    if (user) {
+    let currentUserId: string | undefined;
+    if (supabase) {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      currentUserId = user?.id;
+
+      if (user) {
       let query = supabase
         .from('bookings')
         .update({ status: 'Checked Out' })
@@ -442,8 +495,11 @@ const Bookings = () => {
           .eq('check_out', targetBooking.checkOut);
       }
 
-      await query;
+        await query;
+      }
     }
+
+    await syncRoomOccupancyInBackend({ roomLabel: targetBooking.room, guest: targetBooking.guest, occupied: false });
 
     const roomNumber = getRoomNumberFromLabel(targetBooking.room);
     if (roomNumber) {
@@ -471,11 +527,11 @@ const Bookings = () => {
         ]);
 
         // Save housekeeping task to Supabase
-        if (user) {
+        if (supabase && currentUserId) {
           await supabase
             .from('housekeeping')
             .insert({
-              user_id: user.id,
+              user_id: currentUserId,
               room_id: null,
               type: 'Turnover Clean',
               status: 'Pending',
@@ -512,6 +568,134 @@ const Bookings = () => {
       action: "booking_checked_out",
       details: `${targetBooking.id} checked out from room ${targetBooking.room}.`,
     });
+  };
+
+  const openEditBooking = (booking: Booking) => {
+    setEditingBooking(booking);
+    setEditDateRange({ from: new Date(booking.checkIn), to: new Date(booking.checkOut) });
+    setEditOpen(true);
+  };
+
+  const handleSaveBooking = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!editingBooking || !editDateRange?.from || !editDateRange.to) return;
+
+    const checkInDate = format(editDateRange.from, "yyyy-MM-dd");
+    const checkOutDate = format(editDateRange.to, "yyyy-MM-dd");
+
+    if (hasBookingConflict(bookings, editingBooking.room, checkInDate, checkOutDate, editingBooking.id)) {
+      toast({
+        title: "Booking conflict detected",
+        description: `Room ${editingBooking.room} is already booked for the selected dates.`,
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const previous = bookings.find((b) => b.id === editingBooking.id);
+    if (!previous) return;
+
+    const updated: Booking = {
+      ...editingBooking,
+      checkIn: checkInDate,
+      checkOut: checkOutDate,
+    };
+
+    setBookings((prev) => prev.map((b) => (b.id === updated.id ? updated : b)));
+
+    if (supabase) {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (user) {
+        let query = supabase
+          .from("bookings")
+          .update({
+            guest_name: updated.guest,
+            check_in: updated.checkIn,
+            check_out: updated.checkOut,
+            status: updated.status,
+            total_cost: Number(updated.total),
+            notes: `booking_ref:${updated.id}; room:${updated.room}`,
+          })
+          .eq("user_id", user.id);
+
+        if (updated.dbId) {
+          query = query.eq("id", updated.dbId);
+        } else {
+          query = query.eq("guest_name", previous.guest).eq("check_in", previous.checkIn).eq("check_out", previous.checkOut);
+        }
+
+        const { error } = await query;
+        if (error) {
+          toast({ title: "Update failed", description: error.message, variant: "destructive" });
+        }
+      }
+    }
+
+    if (previous.room !== updated.room || previous.guest !== updated.guest || previous.status !== updated.status) {
+      if (previous.status === "Checked In") {
+        updateRoomOccupancy({ roomLabel: previous.room, guest: previous.guest, occupied: false });
+        await syncRoomOccupancyInBackend({ roomLabel: previous.room, guest: previous.guest, occupied: false });
+      }
+
+      if (updated.status === "Checked In") {
+        updateRoomOccupancy({ roomLabel: updated.room, guest: updated.guest, occupied: true });
+        await syncRoomOccupancyInBackend({ roomLabel: updated.room, guest: updated.guest, occupied: true });
+      }
+    }
+
+    logAction({
+      module: "bookings",
+      action: "booking_updated",
+      details: `${updated.id} updated for ${updated.guest}.`,
+    });
+    toast({ title: "Booking updated", description: `Booking ${updated.id} saved successfully.` });
+
+    setEditOpen(false);
+    setEditingBooking(null);
+    setEditDateRange(undefined);
+  };
+
+  const handleDeleteBooking = async (booking: Booking) => {
+    if (!window.confirm(`Delete booking ${booking.id}?`)) return;
+
+    setBookings((prev) => prev.filter((b) => b.id !== booking.id));
+
+    if (booking.status === "Checked In") {
+      updateRoomOccupancy({ roomLabel: booking.room, guest: booking.guest, occupied: false });
+      await syncRoomOccupancyInBackend({ roomLabel: booking.room, guest: booking.guest, occupied: false });
+    }
+
+    if (supabase) {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (user) {
+        let query = supabase.from("bookings").delete().eq("user_id", user.id);
+
+        if (booking.dbId) {
+          query = query.eq("id", booking.dbId);
+        } else {
+          query = query.eq("guest_name", booking.guest).eq("check_in", booking.checkIn).eq("check_out", booking.checkOut);
+        }
+
+        const { error } = await query;
+        if (error) {
+          toast({ title: "Delete failed", description: error.message, variant: "destructive" });
+          return;
+        }
+      }
+    }
+
+    logAction({
+      module: "bookings",
+      action: "booking_deleted",
+      details: `${booking.id} deleted for ${booking.guest}.`,
+    });
+    toast({ title: "Booking deleted", description: `${booking.id} removed successfully.` });
   };
 
   return (
@@ -604,6 +788,85 @@ const Bookings = () => {
             </form>
           </DialogContent>
         </Dialog>
+
+        <Dialog open={editOpen} onOpenChange={setEditOpen}>
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Edit Booking</DialogTitle>
+            </DialogHeader>
+
+            <form onSubmit={handleSaveBooking} className="space-y-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="edit-booking-guest">Guest</Label>
+                  <Input
+                    id="edit-booking-guest"
+                    value={editingBooking?.guest ?? ""}
+                    onChange={(e) => setEditingBooking((prev) => (prev ? { ...prev, guest: e.target.value } : prev))}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="edit-booking-room">Room</Label>
+                  <Input
+                    id="edit-booking-room"
+                    value={editingBooking?.room ?? ""}
+                    onChange={(e) => setEditingBooking((prev) => (prev ? { ...prev, room: e.target.value } : prev))}
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Check In - Check Out</Label>
+                <DateRangePicker date={editDateRange} onDateChange={setEditDateRange} />
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="edit-booking-total">Total</Label>
+                  <Input
+                    id="edit-booking-total"
+                    inputMode="decimal"
+                    value={String(editingBooking?.total ?? "")}
+                    onChange={(e) =>
+                      setEditingBooking((prev) =>
+                        prev ? { ...prev, total: Number.isFinite(Number(e.target.value)) ? Number(e.target.value) : 0 } : prev,
+                      )
+                    }
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Status</Label>
+                  <Select
+                    value={editingBooking?.status ?? "Confirmed"}
+                    onValueChange={(value) =>
+                      setEditingBooking((prev) => (prev ? { ...prev, status: value as BookingStatus } : prev))
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select status" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="Checked In">Checked In</SelectItem>
+                      <SelectItem value="Checked Out">Checked Out</SelectItem>
+                      <SelectItem value="Confirmed">Confirmed</SelectItem>
+                      <SelectItem value="Pending">Pending</SelectItem>
+                      <SelectItem value="Cancelled">Cancelled</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setEditOpen(false)}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={!editingBooking?.guest.trim() || !editingBooking?.room.trim() || !editDateRange?.from || !editDateRange?.to}>
+                  Save Changes
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
       </div>
 
       <div className="relative max-w-xs">
@@ -656,6 +919,12 @@ const Bookings = () => {
                             Check out
                           </Button>
                         )}
+                        <Button size="icon" variant="outline" onClick={() => openEditBooking(b)}>
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button size="icon" variant="destructive" onClick={() => handleDeleteBooking(b)}>
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
                       </div>
                     </td>
                   </tr>

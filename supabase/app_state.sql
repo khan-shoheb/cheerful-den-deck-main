@@ -108,31 +108,49 @@ alter table public.housekeeping enable row level security;
 alter table public.audit_logs enable row level security;
 
 -- RLS Policies for rooms
+drop policy if exists "rooms_read_own" on public.rooms;
 create policy "rooms_read_own" on public.rooms for select using (auth.uid() = user_id);
+drop policy if exists "rooms_insert_own" on public.rooms;
 create policy "rooms_insert_own" on public.rooms for insert with check (auth.uid() = user_id);
+drop policy if exists "rooms_update_own" on public.rooms;
 create policy "rooms_update_own" on public.rooms for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
+drop policy if exists "rooms_delete_own" on public.rooms;
 create policy "rooms_delete_own" on public.rooms for delete using (auth.uid() = user_id);
 
 -- RLS Policies for bookings
+drop policy if exists "bookings_read_own" on public.bookings;
 create policy "bookings_read_own" on public.bookings for select using (auth.uid() = user_id);
+drop policy if exists "bookings_insert_own" on public.bookings;
 create policy "bookings_insert_own" on public.bookings for insert with check (auth.uid() = user_id);
+drop policy if exists "bookings_update_own" on public.bookings;
 create policy "bookings_update_own" on public.bookings for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
+drop policy if exists "bookings_delete_own" on public.bookings;
 create policy "bookings_delete_own" on public.bookings for delete using (auth.uid() = user_id);
 
 -- RLS Policies for invoices
+drop policy if exists "invoices_read_own" on public.invoices;
 create policy "invoices_read_own" on public.invoices for select using (auth.uid() = user_id);
+drop policy if exists "invoices_insert_own" on public.invoices;
 create policy "invoices_insert_own" on public.invoices for insert with check (auth.uid() = user_id);
+drop policy if exists "invoices_update_own" on public.invoices;
 create policy "invoices_update_own" on public.invoices for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
+drop policy if exists "invoices_delete_own" on public.invoices;
 create policy "invoices_delete_own" on public.invoices for delete using (auth.uid() = user_id);
 
 -- RLS Policies for housekeeping
+drop policy if exists "housekeeping_read_own" on public.housekeeping;
 create policy "housekeeping_read_own" on public.housekeeping for select using (auth.uid() = user_id);
+drop policy if exists "housekeeping_insert_own" on public.housekeeping;
 create policy "housekeeping_insert_own" on public.housekeeping for insert with check (auth.uid() = user_id);
+drop policy if exists "housekeeping_update_own" on public.housekeeping;
 create policy "housekeeping_update_own" on public.housekeeping for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
+drop policy if exists "housekeeping_delete_own" on public.housekeeping;
 create policy "housekeeping_delete_own" on public.housekeeping for delete using (auth.uid() = user_id);
 
 -- RLS Policies for audit_logs
+drop policy if exists "audit_logs_read_own" on public.audit_logs;
 create policy "audit_logs_read_own" on public.audit_logs for select using (auth.uid() = user_id);
+drop policy if exists "audit_logs_insert_own" on public.audit_logs;
 create policy "audit_logs_insert_own" on public.audit_logs for insert with check (auth.uid() = user_id);
 
 -- App state table for lightweight persisted UI/module data (used by useAppState hook)
@@ -146,22 +164,26 @@ create table if not exists public.app_state (
 
 alter table public.app_state enable row level security;
 
+drop policy if exists "app_state_read_own" on public.app_state;
 create policy "app_state_read_own"
 on public.app_state
 for select
 using (auth.uid() = user_id);
 
+drop policy if exists "app_state_insert_own" on public.app_state;
 create policy "app_state_insert_own"
 on public.app_state
 for insert
 with check (auth.uid() = user_id);
 
+drop policy if exists "app_state_update_own" on public.app_state;
 create policy "app_state_update_own"
 on public.app_state
 for update
 using (auth.uid() = user_id)
 with check (auth.uid() = user_id);
 
+drop policy if exists "app_state_delete_own" on public.app_state;
 create policy "app_state_delete_own"
 on public.app_state
 for delete

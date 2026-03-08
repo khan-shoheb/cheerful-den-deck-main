@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -21,21 +21,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Plus, UserCog, Mail, Phone } from "lucide-react";
+import { toast } from "@/components/ui/use-toast";
+import { canUseBackend, createStaffMember, deleteStaffMember, fetchStaffMembers, updateStaffMember, type StaffRecord, type StaffShift, type StaffStatus } from "@/lib/hotel-api";
 
-type StaffStatus = "On Duty" | "Off Duty";
-type StaffShift = "Morning" | "Evening" | "Night";
-
-type StaffMember = {
-  id: string;
-  name: string;
-  role: string;
-  email: string;
-  phone: string;
-  status: StaffStatus;
-  shift: StaffShift;
-};
-
-const initialStaff: StaffMember[] = [
+const initialStaff: StaffRecord[] = [
   { id: "1", name: "Maria Garcia", role: "Housekeeping Lead", email: "maria@lodge.com", phone: "+1 555-1001", status: "On Duty", shift: "Morning" },
   { id: "2", name: "John Davis", role: "Housekeeper", email: "john@lodge.com", phone: "+1 555-1002", status: "On Duty", shift: "Morning" },
   { id: "3", name: "Sarah Kim", role: "Housekeeper", email: "sarah@lodge.com", phone: "+1 555-1003", status: "Off Duty", shift: "Evening" },
@@ -50,8 +39,10 @@ const statusColors: Record<StaffStatus, string> = {
 };
 
 const Staff = () => {
-  const [staff, setStaff] = useAppState<StaffMember[]>("rm_staff", initialStaff);
+  const [staff, setStaff] = useAppState<StaffRecord[]>("rm_staff", initialStaff);
   const [addOpen, setAddOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editStaff, setEditStaff] = useState<StaffRecord | null>(null);
   const [newStaff, setNewStaff] = useState<{
     name: string;
     role: string;
@@ -74,7 +65,23 @@ const Staff = () => {
     newStaff.email.trim().length > 0 &&
     newStaff.phone.trim().length > 0;
 
-  const handleCreateStaff = (event: React.FormEvent) => {
+  useEffect(() => {
+    if (!canUseBackend()) return;
+
+    let cancelled = false;
+
+    (async () => {
+      const remoteStaff = await fetchStaffMembers();
+      if (cancelled) return;
+      setStaff(remoteStaff);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [setStaff]);
+
+  const handleCreateStaff = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!canSubmitNewStaff) return;
 
@@ -84,7 +91,7 @@ const Staff = () => {
           (crypto as any).randomUUID()
         : String(Date.now());
 
-    const next: StaffMember = {
+    const next: StaffRecord = {
       id,
       name: newStaff.name.trim(),
       role: newStaff.role.trim(),
@@ -94,9 +101,63 @@ const Staff = () => {
       shift: newStaff.shift,
     };
 
-    setStaff((prev) => [next, ...prev]);
+    if (canUseBackend()) {
+      const isCreated = await createStaffMember(next);
+      if (!isCreated) {
+        toast({
+          title: "Staff save failed",
+          description: "Unable to save staff member in backend. Please re-login and try again.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const refreshed = await fetchStaffMembers();
+      setStaff(refreshed);
+    } else {
+      setStaff((prev) => [next, ...prev]);
+    }
+
     setAddOpen(false);
     setNewStaff({ name: "", role: "", email: "", phone: "", status: "On Duty", shift: "Morning" });
+
+    toast({
+      title: "Staff created",
+      description: `${next.name} has been created successfully.`,
+    });
+  };
+
+  const handleSaveStaff = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!editStaff) return;
+
+    if (canUseBackend()) {
+      const ok = await updateStaffMember(editStaff);
+      if (!ok) {
+        toast({ title: "Update failed", description: "Unable to update staff in backend.", variant: "destructive" });
+        return;
+      }
+    }
+
+    setStaff((prev) => prev.map((s) => (s.id === editStaff.id ? editStaff : s)));
+    setEditOpen(false);
+    setEditStaff(null);
+    toast({ title: "Staff updated", description: `${editStaff.name} updated successfully.` });
+  };
+
+  const handleDeleteStaff = async (staffMember: StaffRecord) => {
+    if (!window.confirm(`Delete staff member ${staffMember.name}?`)) return;
+
+    if (canUseBackend()) {
+      const ok = await deleteStaffMember(staffMember.id);
+      if (!ok) {
+        toast({ title: "Delete failed", description: "Unable to delete staff from backend.", variant: "destructive" });
+        return;
+      }
+    }
+
+    setStaff((prev) => prev.filter((s) => s.id !== staffMember.id));
+    toast({ title: "Staff deleted", description: `${staffMember.name} deleted successfully.` });
   };
 
   return (
@@ -208,6 +269,65 @@ const Staff = () => {
             </form>
           </DialogContent>
         </Dialog>
+        <Dialog
+          open={editOpen}
+          onOpenChange={(open) => {
+            setEditOpen(open);
+            if (!open) setEditStaff(null);
+          }}
+        >
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Edit Staff Member</DialogTitle>
+            </DialogHeader>
+            {editStaff && (
+              <form onSubmit={handleSaveStaff} className="space-y-4">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-staff-name">Name</Label>
+                    <Input
+                      id="edit-staff-name"
+                      value={editStaff.name}
+                      onChange={(e) => setEditStaff((prev) => (prev ? { ...prev, name: e.target.value } : prev))}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-staff-role">Role</Label>
+                    <Input
+                      id="edit-staff-role"
+                      value={editStaff.role}
+                      onChange={(e) => setEditStaff((prev) => (prev ? { ...prev, role: e.target.value } : prev))}
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-staff-email">Email</Label>
+                    <Input
+                      id="edit-staff-email"
+                      value={editStaff.email}
+                      onChange={(e) => setEditStaff((prev) => (prev ? { ...prev, email: e.target.value } : prev))}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="edit-staff-phone">Phone</Label>
+                    <Input
+                      id="edit-staff-phone"
+                      value={editStaff.phone}
+                      onChange={(e) => setEditStaff((prev) => (prev ? { ...prev, phone: e.target.value } : prev))}
+                    />
+                  </div>
+                </div>
+                <DialogFooter>
+                  <Button type="button" variant="outline" onClick={() => setEditOpen(false)}>
+                    Cancel
+                  </Button>
+                  <Button type="submit">Save</Button>
+                </DialogFooter>
+              </form>
+            )}
+          </DialogContent>
+        </Dialog>
       </div>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -246,6 +366,14 @@ const Staff = () => {
                 <div className="flex items-center gap-2">
                   <UserCog className="h-3.5 w-3.5" />Shift: {s.shift}
                 </div>
+              </div>
+              <div className="mt-4 flex items-center gap-2">
+                <Button type="button" size="sm" variant="outline" onClick={() => { setEditStaff(s); setEditOpen(true); }}>
+                  Edit
+                </Button>
+                <Button type="button" size="sm" variant="destructive" onClick={() => void handleDeleteStaff(s)}>
+                  Delete
+                </Button>
               </div>
             </CardContent>
           </Card>

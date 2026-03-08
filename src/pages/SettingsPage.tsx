@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "@/components/ui/use-toast";
 import { useAppState } from "@/hooks/use-app-state";
+import { canUseBackend, fetchSettings, upsertSettings } from "@/lib/hotel-api";
 
 type NotificationKey = "newBookings" | "checkInReminders" | "paymentAlerts" | "housekeepingUpdates";
 
@@ -53,6 +54,41 @@ const SettingsPage = () => {
   const [settings, setSettings] = useAppState<SettingsData>("rm_settings", defaultSettings);
   const [isSaving, setIsSaving] = useState(false);
 
+  useEffect(() => {
+    if (!canUseBackend()) return;
+
+    let cancelled = false;
+
+    (async () => {
+      const remoteSettings = await fetchSettings();
+      if (!remoteSettings || cancelled) return;
+      setSettings((prev) => ({
+        ...defaultSettings,
+        ...prev,
+        ...remoteSettings,
+        property: {
+          ...defaultSettings.property,
+          ...(prev?.property ?? {}),
+          ...(remoteSettings.property ?? {}),
+        },
+        notifications: {
+          ...defaultSettings.notifications,
+          ...(prev?.notifications ?? {}),
+          ...(remoteSettings.notifications ?? {}),
+        },
+        payments: {
+          ...defaultSettings.payments,
+          ...(prev?.payments ?? {}),
+          ...(remoteSettings.payments ?? {}),
+        },
+      }));
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [setSettings]);
+
   // Ensure settings has all required fields
   const safeSettings: SettingsData = {
     property: settings?.property || defaultSettings.property,
@@ -63,8 +99,20 @@ const SettingsPage = () => {
   const handleSave = async () => {
     setIsSaving(true);
     try {
-      // Placeholder for API call.
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      if (canUseBackend()) {
+        const ok = await upsertSettings(safeSettings);
+        if (!ok) {
+          toast({
+            title: "Settings save failed",
+            description: "Unable to save settings in backend. Please re-login and try again.",
+            variant: "destructive",
+          });
+          return;
+        }
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+
       toast({
         title: "Settings saved",
         description: "Your property settings have been updated.",

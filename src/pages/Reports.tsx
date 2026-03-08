@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { DateRangePicker } from "@/components/ui/date-range-picker";
@@ -10,6 +10,7 @@ import { Download } from "lucide-react";
 import { format } from "date-fns";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 
 type Booking = {
   id: string;
@@ -32,6 +33,29 @@ type Invoice = {
   status: "Paid" | "Pending" | "Overdue";
 };
 
+type BookingRow = {
+  id: string;
+  guest_name: string;
+  check_in: string;
+  check_out: string;
+  total_cost: number | null;
+  status: Booking["status"];
+  notes: string | null;
+};
+
+type InvoiceRow = {
+  id: string;
+  invoice_number: string | null;
+  guest_name: string | null;
+  taxable_amount: number | null;
+  gst_rate: number | null;
+  gst_amount: number | null;
+  amount: number | null;
+  due_date: string | null;
+  paid_date: string | null;
+  status: Invoice["status"];
+};
+
 const monthSortValue = (month: string) => {
   const date = new Date(`${month} 01, 2026`);
   return Number.isNaN(date.getTime()) ? 0 : date.getTime();
@@ -43,10 +67,76 @@ const formatDateLabel = (value: string) => {
   return parsed.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "2-digit" });
 };
 
+const parseRoomFromNotes = (notes: string | null): string => {
+  if (!notes) return "-";
+  const roomMatch = notes.match(/room\s*:\s*([^;]+)/i);
+  return roomMatch?.[1]?.trim() || "-";
+};
+
 const Reports = () => {
-  const [bookings] = useAppState<Booking[]>("rm_bookings", []);
-  const [invoices] = useAppState<Invoice[]>("rm_invoices", []);
+  const [bookings, setBookings] = useAppState<Booking[]>("rm_bookings", []);
+  const [invoices, setInvoices] = useAppState<Invoice[]>("rm_invoices", []);
   const [dateRange, setDateRange] = useState<DateRange | undefined>();
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) return;
+
+    let cancelled = false;
+
+    (async () => {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (!user || cancelled) return;
+
+      const [bookingsRes, invoicesRes] = await Promise.all([
+        supabase
+          .from("bookings")
+          .select("id,guest_name,check_in,check_out,total_cost,status,notes")
+          .eq("user_id", user.id)
+          .order("created_at", { ascending: false }),
+        supabase
+          .from("invoices")
+          .select("id,invoice_number,guest_name,taxable_amount,gst_rate,gst_amount,amount,due_date,paid_date,status")
+          .eq("user_id", user.id)
+          .order("created_at", { ascending: false }),
+      ]);
+
+      if (cancelled) return;
+
+      if (!bookingsRes.error) {
+        const mappedBookings = ((bookingsRes.data as BookingRow[] | null) ?? []).map((row) => ({
+          id: row.id,
+          guest: row.guest_name,
+          room: parseRoomFromNotes(row.notes),
+          checkIn: row.check_in,
+          checkOut: row.check_out,
+          total: Number(row.total_cost ?? 0),
+          status: row.status,
+        }));
+        setBookings(mappedBookings);
+      }
+
+      if (!invoicesRes.error) {
+        const mappedInvoices = ((invoicesRes.data as InvoiceRow[] | null) ?? []).map((row) => ({
+          id: row.invoice_number || row.id,
+          guest: row.guest_name || "Unknown",
+          taxableAmount: Number(row.taxable_amount ?? row.amount ?? 0),
+          gstRate: Number(row.gst_rate ?? 0),
+          gstAmount: Number(row.gst_amount ?? 0),
+          amount: Number(row.amount ?? 0),
+          date: row.paid_date || row.due_date || new Date().toISOString().slice(0, 10),
+          status: row.status,
+        }));
+        setInvoices(mappedInvoices);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [setBookings, setInvoices]);
 
   const filteredBookings = useMemo(() => {
     if (!dateRange?.from || !dateRange.to) return bookings;

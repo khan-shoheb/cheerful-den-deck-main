@@ -25,13 +25,13 @@ const SuperAdminLogin = () => {
       return;
     }
 
-    const success = await login(normalizedEmail, normalizedPassword, "superadmin");
-    if (success) {
+    const result = await login(normalizedEmail, normalizedPassword, "superadmin");
+    if (result.success) {
       navigate("/superadmin");
       return;
     }
 
-    setError("Invalid superadmin credentials");
+    setError(result.error || "Invalid superadmin credentials");
   };
 
   return (
@@ -58,7 +58,14 @@ const SuperAdminLogin = () => {
               </div>
             </div>
 
-            {error && <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">{error}</div>}
+            {error && (
+              <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+                <p>{error}</p>
+                <p className="mt-1 text-xs text-red-200/90">
+                  Quick check: Supabase Auth Users me `superadmin@room.com` user create/reset password karein, then retry.
+                </p>
+              </div>
+            )}
 
             <div className="space-y-2">
               <label className="text-sm font-semibold text-slate-100">Email</label>

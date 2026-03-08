@@ -21,11 +21,11 @@ const Login = () => {
       setError("Please enter both email and password");
       return;
     }
-    const success = await login(email, password, "admin");
-    if (success) {
+    const result = await login(email, password, "admin");
+    if (result.success) {
       navigate("/");
     } else {
-      setError("Invalid credentials");
+      setError(result.error || "Invalid credentials");
     }
   };
 
@@ -95,8 +95,8 @@ const Login = () => {
 
           <p className="text-center text-xs text-slate-300">
             {isSupabaseConfigured
-              ? "Use Supabase user, or demo: sujalpatne583@gmail.com / Sujal@123"
-              : "Demo: sujalpatne583@gmail.com / Sujal@123"}
+              ? "Use a Supabase Auth user (demo login is disabled in backend mode)"
+              : "Demo: admin@room.com / Admin@123"}
           </p>
 
           <p className="text-center text-xs text-slate-400">
