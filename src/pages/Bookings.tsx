@@ -12,6 +12,7 @@ import { format } from "date-fns";
 import { useAuditLog } from "@/hooks/use-audit-log";
 import { sendNotificationEmail } from "@/lib/notification-email";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
+import { canUseBackend } from "@/lib/hotel-api";
 import {
   Dialog,
   DialogContent,
@@ -195,7 +196,7 @@ const Bookings = () => {
   }, [bookings, search]);
 
   useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) return;
+    if (!canUseBackend() || !supabase) return;
 
     let cancelled = false;
 
@@ -262,64 +263,93 @@ const Bookings = () => {
 
     const bookingRef = formatBookingId(maxExisting + 1);
 
-    if (!isSupabaseConfigured || !supabase) {
-      toast({
-        title: "Supabase not configured",
-        description: "Database connection is not configured. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.",
-        variant: "destructive",
-      });
-      return;
-    }
+    let next: Booking;
+    let shouldUseBackend = canUseBackend() && Boolean(supabase);
 
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
+    if (shouldUseBackend && supabase) {
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser();
 
-    if (userError || !user) {
-      toast({
-        title: "Session required",
-        description: "Please log in again before creating bookings.",
-        variant: "destructive",
-      });
-      return;
-    }
+      if (userError || !user) {
+        // Graceful fallback for legacy local sessions after auth-mode changes.
+        const hasLocalAuth =
+          typeof window !== "undefined" &&
+          window.localStorage.getItem("rm_auth") === "true" &&
+          Boolean(window.localStorage.getItem("rm_user"));
 
-    const { data, error } = await supabase
-      .from('bookings')
-      .insert({
-        user_id: user.id,
-        guest_name: newBooking.guest.trim(),
-        room_id: null,
-        check_in: checkInDate,
-        check_out: checkOutDate,
+        if (hasLocalAuth) {
+          shouldUseBackend = false;
+        } else {
+          toast({
+            title: "Session required",
+            description: "Please log in again before creating bookings.",
+            variant: "destructive",
+          });
+          return;
+        }
+      }
+
+      if (!shouldUseBackend) {
+        next = {
+          id: bookingRef,
+          guest: newBooking.guest.trim(),
+          room: newBooking.room.trim(),
+          checkIn: checkInDate,
+          checkOut: checkOutDate,
+          total: Number(newBooking.total),
+          status: newBooking.status,
+        };
+      } else {
+        const { data, error } = await supabase
+          .from("bookings")
+          .insert({
+            user_id: user!.id,
+            guest_name: newBooking.guest.trim(),
+            room_id: null,
+            check_in: checkInDate,
+            check_out: checkOutDate,
+            status: newBooking.status,
+            total_cost: Number(newBooking.total),
+            notes: `booking_ref:${bookingRef}; room:${newBooking.room.trim()}`,
+          })
+          .select("id")
+          .single();
+
+        if (error) {
+          console.error("Error saving booking to Supabase:", error);
+          toast({
+            title: "Booking save failed",
+            description: error.message || "Could not save booking to database.",
+            variant: "destructive",
+          });
+          return;
+        }
+
+        next = {
+          id: bookingRef,
+          dbId: data.id,
+          guest: newBooking.guest.trim(),
+          room: newBooking.room.trim(),
+          checkIn: checkInDate,
+          checkOut: checkOutDate,
+          total: Number(newBooking.total),
+          status: newBooking.status,
+        };
+      }
+    } else {
+      // In demo/local-mock mode, keep bookings in app state without backend session.
+      next = {
+        id: bookingRef,
+        guest: newBooking.guest.trim(),
+        room: newBooking.room.trim(),
+        checkIn: checkInDate,
+        checkOut: checkOutDate,
+        total: Number(newBooking.total),
         status: newBooking.status,
-        total_cost: Number(newBooking.total),
-        notes: `booking_ref:${bookingRef}; room:${newBooking.room.trim()}`,
-      })
-      .select("id")
-      .single();
-
-    if (error) {
-      console.error("Error saving booking to Supabase:", error);
-      toast({
-        title: "Booking save failed",
-        description: error.message || "Could not save booking to database.",
-        variant: "destructive",
-      });
-      return;
+      };
     }
-
-    const next: Booking = {
-      id: bookingRef,
-      dbId: data.id,
-      guest: newBooking.guest.trim(),
-      room: newBooking.room.trim(),
-      checkIn: checkInDate,
-      checkOut: checkOutDate,
-      total: Number(newBooking.total),
-      status: newBooking.status,
-    };
 
     setBookings((prev) => [next, ...prev]);
 
@@ -360,7 +390,7 @@ const Bookings = () => {
   };
 
   const syncRoomOccupancyInBackend = async (params: { roomLabel: string; guest: string; occupied: boolean }) => {
-    if (!supabase) return;
+    if (!canUseBackend() || !supabase) return;
     const roomNumber = getRoomNumberFromLabel(params.roomLabel);
     if (!roomNumber) return;
 
@@ -416,7 +446,7 @@ const Bookings = () => {
     });
 
     // Update in Supabase
-    if (supabase) {
+    if (canUseBackend() && supabase) {
       const {
         data: { user },
       } = await supabase.auth.getUser();
@@ -473,7 +503,7 @@ const Bookings = () => {
 
     // Update in Supabase
     let currentUserId: string | undefined;
-    if (supabase) {
+    if (canUseBackend() && supabase) {
       const {
         data: { user },
       } = await supabase.auth.getUser();
@@ -527,7 +557,7 @@ const Bookings = () => {
         ]);
 
         // Save housekeeping task to Supabase
-        if (supabase && currentUserId) {
+        if (canUseBackend() && supabase && currentUserId) {
           await supabase
             .from('housekeeping')
             .insert({
@@ -603,7 +633,7 @@ const Bookings = () => {
 
     setBookings((prev) => prev.map((b) => (b.id === updated.id ? updated : b)));
 
-    if (supabase) {
+    if (canUseBackend() && supabase) {
       const {
         data: { user },
       } = await supabase.auth.getUser();
@@ -668,7 +698,7 @@ const Bookings = () => {
       await syncRoomOccupancyInBackend({ roomLabel: booking.room, guest: booking.guest, occupied: false });
     }
 
-    if (supabase) {
+    if (canUseBackend() && supabase) {
       const {
         data: { user },
       } = await supabase.auth.getUser();

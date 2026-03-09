@@ -2,6 +2,7 @@ import * as React from "react";
 import { addDays, format } from "date-fns";
 import { Calendar as CalendarIcon } from "lucide-react";
 import { DateRange } from "react-day-picker";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -25,9 +26,21 @@ export function DateRangePicker({
   className,
   disabled,
 }: DateRangePickerProps) {
+  const isMobile = useIsMobile();
+  const [open, setOpen] = React.useState(false);
+
+  const handleSelect = (nextRange: DateRange | undefined) => {
+    onDateChange?.(nextRange);
+
+    // Close the popover once a full range is chosen.
+    if (nextRange?.from && nextRange?.to) {
+      setOpen(false);
+    }
+  };
+
   return (
     <div className={cn("grid gap-2", className)}>
-      <Popover>
+      <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <Button
             id="date"
@@ -59,8 +72,8 @@ export function DateRangePicker({
             mode="range"
             defaultMonth={date?.from}
             selected={date}
-            onSelect={onDateChange}
-            numberOfMonths={2}
+            onSelect={handleSelect}
+            numberOfMonths={isMobile ? 1 : 2}
           />
         </PopoverContent>
       </Popover>
