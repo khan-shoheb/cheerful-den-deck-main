@@ -161,7 +161,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         localStorage.setItem("rm_auth_source", "local-mock");
       };
 
+      const isAdminDemoMatch = normalizedEmail === MOCK_ADMIN_EMAIL && normalizedPassword === MOCK_ADMIN_PASSWORD;
+      const isSuperAdminDemoMatch =
+        normalizedEmail === MOCK_SUPERADMIN_EMAIL && normalizedPassword === MOCK_SUPERADMIN_PASSWORD;
+
       if (useSupabase) {
+        // Allow explicit demo credentials even when Supabase is configured.
+        if (isAdminDemoMatch || isSuperAdminDemoMatch) {
+          const role: AppRole = isSuperAdminDemoMatch ? "superadmin" : "admin";
+          const isRoleAllowed = loginAs === "superadmin" ? role === "superadmin" : role !== "superadmin";
+          if (!isRoleAllowed) {
+            return { success: false, error: "Role mismatch for selected login type." };
+          }
+
+          applyLocalMockSession(role);
+          return { success: true };
+        }
+
         const { data, error } = await supabase!.auth.signInWithPassword({
           email: normalizedEmail,
           password: normalizedPassword,
@@ -196,11 +212,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       // Frontend-only mock login (fallback)
       if (normalizedEmail && normalizedPassword) {
-        const isAdminMatch = normalizedEmail === MOCK_ADMIN_EMAIL && normalizedPassword === MOCK_ADMIN_PASSWORD;
-        const isSuperAdminMatch =
-          normalizedEmail === MOCK_SUPERADMIN_EMAIL && normalizedPassword === MOCK_SUPERADMIN_PASSWORD;
-        const role: AppRole = isSuperAdminMatch ? "superadmin" : "admin";
-        if (loginAs === "admin" && !isAdminMatch) {
+        const role: AppRole = isSuperAdminDemoMatch ? "superadmin" : "admin";
+        if (loginAs === "admin" && !isAdminDemoMatch) {
           return { success: false, error: "Invalid credentials" };
         }
         const isRoleAllowed = loginAs === "superadmin" ? role === "superadmin" : role !== "superadmin";

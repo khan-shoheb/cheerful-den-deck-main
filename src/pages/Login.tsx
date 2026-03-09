@@ -95,7 +95,7 @@ const Login = () => {
 
           <p className="text-center text-xs text-slate-300">
             {isSupabaseConfigured
-              ? "Use a Supabase Auth user (demo login is disabled in backend mode)"
+              ? "Use Supabase user or demo: admin@room.com / Admin@123"
               : "Demo: admin@room.com / Admin@123"}
           </p>
 

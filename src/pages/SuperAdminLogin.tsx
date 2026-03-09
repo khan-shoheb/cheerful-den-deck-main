@@ -104,7 +104,7 @@ const SuperAdminLogin = () => {
 
             <p className="text-center text-xs text-slate-300">
               {isSupabaseConfigured
-                ? "Use a Supabase user with role=superadmin"
+                ? "Use Supabase user or demo: superadmin@room.com / Super@123"
                 : "Demo: superadmin@room.com / Super@123"}
             </p>
 
