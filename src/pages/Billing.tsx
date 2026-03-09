@@ -731,7 +731,8 @@ const Billing = () => {
 
       <Card className="border-none shadow-sm">
         <CardContent className="p-0">
-          <table className="w-full text-sm">
+          <div className="w-full overflow-x-auto">
+            <table className="w-full min-w-[760px] text-sm">
             <thead>
               <tr className="border-b text-left text-muted-foreground">
                 <th className="px-5 py-3 font-medium">Invoice</th>
@@ -739,7 +740,7 @@ const Billing = () => {
                 <th className="px-5 py-3 font-medium">Amount</th>
                 <th className="px-5 py-3 font-medium">Date</th>
                 <th className="px-5 py-3 font-medium">Status</th>
-                <th className="px-5 py-3 font-medium"></th>
+                <th className="px-5 py-3 font-medium whitespace-nowrap"></th>
               </tr>
             </thead>
             <tbody>
@@ -754,7 +755,7 @@ const Billing = () => {
                       {inv.status}
                     </Badge>
                   </td>
-                  <td className="px-5 py-3">
+                  <td className="px-5 py-3 whitespace-nowrap">
                     <div className="flex items-center justify-end gap-2">
                       <Button
                         variant="outline"
@@ -783,7 +784,8 @@ const Billing = () => {
                 </tr>
               ))}
             </tbody>
-          </table>
+            </table>
+          </div>
         </CardContent>
       </Card>
     </div>
