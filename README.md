@@ -104,6 +104,10 @@ supabase secrets set RAZORPAY_KEY_SECRET=xxxxxxxx
 supabase functions deploy create-razorpay-order
 supabase functions deploy verify-razorpay-payment
 supabase functions deploy send-notification-email
+supabase functions deploy provision-admin-user
+supabase functions deploy validate-admin-access
+supabase functions deploy complete-admin-password-reset
+supabase functions deploy reset-admin-password
 ```
 
 ### 3.1) Email notification secrets (Resend)
@@ -136,6 +140,7 @@ supabase secrets set NOTIFY_FROM_EMAIL="Hotel Notifications <onboarding@resend.d
 - `supabase/superadmin_users_settings.sql`
 - `supabase/superadmin_permissions_matrix.sql`
 - `supabase/superadmin_bootstrap.sql`
+- `supabase/superadmin_admin_provisioning.sql`
 
 3) In Supabase Auth Users, ensure user exists:
 

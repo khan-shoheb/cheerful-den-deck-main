@@ -1,5 +1,6 @@
-import React, { createContext, useContext, useEffect, useMemo, useState, useCallback } from "react";
+import { completeAdminPasswordReset, validateAdminAccess } from "@/lib/admin-auth";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 
 export type AppRole = "admin" | "superadmin" | "manager" | "frontdesk" | "housekeeping" | "accountant";
 type LoginResult = { success: true } | { success: false; error: string };
@@ -55,13 +56,14 @@ const resolveRole = (params: { roleFromUserMeta?: unknown; roleFromAppMeta?: unk
 interface AuthContextType {
   isAuthenticated: boolean;
   authUserId: string | null;
-  user: { name: string; role: AppRole; email?: string } | null;
+  user: { name: string; role: AppRole; email?: string; mustResetPassword?: boolean } | null;
   login: (
     email: string,
     password: string,
     loginAs?: "admin" | "superadmin",
   ) => Promise<LoginResult>;
   logout: () => Promise<void>;
+  completePasswordReset: (newPassword: string) => Promise<LoginResult>;
 }
 
 const AuthContext = createContext<AuthContextType>({} as AuthContextType);
@@ -72,14 +74,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const useSupabase = useMemo(() => isSupabaseConfigured && Boolean(supabase), []);
   const MOCK_SUPERADMIN_EMAIL = "superadmin@room.com";
   const MOCK_SUPERADMIN_PASSWORD = "Super@123";
-  const MOCK_ADMIN_EMAIL = "admin@room.com";
+  const MOCK_ADMIN_EMAIL = "admin@hotel.com";
   const MOCK_ADMIN_PASSWORD = "Admin@123";
 
   const [isAuthenticated, setIsAuthenticated] = useState(() => {
     return useSupabase ? false : localStorage.getItem("rm_auth") === "true";
   });
   const [authUserId, setAuthUserId] = useState<string | null>(null);
-  const [user, setUser] = useState<{ name: string; role: AppRole; email?: string } | null>(() => {
+  const [user, setUser] = useState<{ name: string; role: AppRole; email?: string; mustResetPassword?: boolean } | null>(() => {
     if (useSupabase) return null;
     const saved = localStorage.getItem("rm_user");
     if (!saved) return null;
@@ -88,6 +90,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       name: parsed.name || "User",
       role: normalizeRole(parsed.role),
       email: parsed.email,
+      mustResetPassword: false,
     };
   });
 
@@ -114,6 +117,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 email: session.user.email,
               }),
               email: session.user.email ?? undefined,
+              mustResetPassword: localStorage.getItem("rm_force_password_reset") === "true",
             }
           : null,
       );
@@ -135,6 +139,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 email: session.user.email,
               }),
               email: session.user.email ?? undefined,
+              mustResetPassword: localStorage.getItem("rm_force_password_reset") === "true",
             }
           : null,
       );
@@ -152,13 +157,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const normalizedPassword = password.trim();
 
       const applyLocalMockSession = (role: AppRole) => {
-        const userData = { name: normalizedEmail.split("@")[0], role, email: normalizedEmail };
+        const userData = { name: normalizedEmail.split("@")[0], role, email: normalizedEmail, mustResetPassword: false };
         setIsAuthenticated(true);
         setAuthUserId(`local-${role}`);
         setUser(userData);
         localStorage.setItem("rm_auth", "true");
         localStorage.setItem("rm_user", JSON.stringify(userData));
         localStorage.setItem("rm_auth_source", "local-mock");
+        localStorage.removeItem("rm_force_password_reset");
       };
 
       const isAdminDemoMatch = normalizedEmail === MOCK_ADMIN_EMAIL && normalizedPassword === MOCK_ADMIN_PASSWORD;
@@ -166,18 +172,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         normalizedEmail === MOCK_SUPERADMIN_EMAIL && normalizedPassword === MOCK_SUPERADMIN_PASSWORD;
 
       if (useSupabase) {
-        // Allow explicit demo credentials even when Supabase is configured.
-        if (isAdminDemoMatch || isSuperAdminDemoMatch) {
-          const role: AppRole = isSuperAdminDemoMatch ? "superadmin" : "admin";
-          const isRoleAllowed = loginAs === "superadmin" ? role === "superadmin" : role !== "superadmin";
-          if (!isRoleAllowed) {
-            return { success: false, error: "Role mismatch for selected login type." };
-          }
-
-          applyLocalMockSession(role);
-          return { success: true };
-        }
-
         const { data, error } = await supabase!.auth.signInWithPassword({
           email: normalizedEmail,
           password: normalizedPassword,
@@ -194,7 +188,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           roleFromAppMeta: data.user?.app_metadata?.role,
           email: data.user?.email,
         });
-        localStorage.setItem("rm_auth_source", "supabase");
         const isRoleAllowed = loginAs === "superadmin" ? role === "superadmin" : role !== "superadmin";
         if (!isRoleAllowed) {
           await supabase!.auth.signOut();
@@ -206,6 +199,34 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 : "This account cannot be used for admin login.",
           };
         }
+
+        if (loginAs === "admin") {
+          try {
+            const validation = await validateAdminAccess();
+            if (!validation.authorized) {
+              await supabase!.auth.signOut();
+              localStorage.removeItem("rm_force_password_reset");
+              return {
+                success: false,
+                error: validation.reason || "Admin access is not authorized yet.",
+              };
+            }
+            const mustResetPassword = Boolean(validation.mustResetPassword);
+            localStorage.setItem("rm_force_password_reset", mustResetPassword ? "true" : "false");
+            setUser((prev) => (prev ? { ...prev, mustResetPassword } : prev));
+          } catch (error) {
+            await supabase!.auth.signOut();
+            localStorage.removeItem("rm_force_password_reset");
+            return {
+              success: false,
+              error: error instanceof Error ? error.message : "Unable to validate admin access.",
+            };
+          }
+        } else {
+          localStorage.removeItem("rm_force_password_reset");
+        }
+
+        localStorage.setItem("rm_auth_source", "supabase");
 
         return { success: true };
       }
@@ -240,10 +261,43 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.removeItem("rm_auth");
     localStorage.removeItem("rm_user");
     localStorage.removeItem("rm_auth_source");
+    localStorage.removeItem("rm_force_password_reset");
   }, [useSupabase]);
 
+  const completePasswordReset = useCallback<AuthContextType["completePasswordReset"]>(
+    async (newPassword: string): Promise<LoginResult> => {
+      const normalizedPassword = newPassword.trim();
+      if (normalizedPassword.length < 8) {
+        return { success: false, error: "Password must be at least 8 characters long." };
+      }
+
+      if (!useSupabase || !supabase) {
+        return { success: false, error: "Password reset requires Supabase authentication." };
+      }
+
+      const { error } = await supabase.auth.updateUser({ password: normalizedPassword });
+      if (error) {
+        return { success: false, error: error.message || "Failed to update password." };
+      }
+
+      try {
+        await completeAdminPasswordReset();
+      } catch (updateError) {
+        return {
+          success: false,
+          error: updateError instanceof Error ? updateError.message : "Password updated but reset flag update failed.",
+        };
+      }
+
+      localStorage.setItem("rm_force_password_reset", "false");
+      setUser((prev) => (prev ? { ...prev, mustResetPassword: false } : prev));
+      return { success: true };
+    },
+    [useSupabase],
+  );
+
   return (
-    <AuthContext.Provider value={{ isAuthenticated, authUserId, user, login, logout }}>
+    <AuthContext.Provider value={{ isAuthenticated, authUserId, user, login, logout, completePasswordReset }}>
       {children}
     </AuthContext.Provider>
   );

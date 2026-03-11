@@ -1,10 +1,10 @@
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { useAuth } from "@/contexts/AuthContext";
+import { isSupabaseConfigured } from "@/lib/supabase";
+import { BedDouble, Eye, EyeOff } from "lucide-react";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { useAuth } from "@/contexts/AuthContext";
-import { BedDouble, Eye, EyeOff } from "lucide-react";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
-import { isSupabaseConfigured } from "@/lib/supabase";
 
 const Login = () => {
   const [email, setEmail] = useState("");
@@ -95,8 +95,8 @@ const Login = () => {
 
           <p className="text-center text-xs text-slate-300">
             {isSupabaseConfigured
-              ? "Use Supabase user or demo: admin@room.com / Admin@123"
-              : "Demo: admin@room.com / Admin@123"}
+              ? "Use Supabase user or demo: admin@hotel.com / Admin@123"
+              : "Demo: admin@hotel.com / Admin@123"}
           </p>
 
           <p className="text-center text-xs text-slate-400">

@@ -1,33 +1,33 @@
-import { useEffect, useMemo, useState } from "react";
-import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
-import { useAppState } from "@/hooks/use-app-state";
-import { formatINR } from "@/lib/currency";
-import { toast } from "@/components/ui/use-toast";
-import { useAuth } from "@/contexts/AuthContext";
-import { supabase } from "@/lib/supabase";
-import { sendNotificationEmail } from "@/lib/notification-email";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
+    Dialog,
+    DialogContent,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+    DialogTrigger,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
 } from "@/components/ui/select";
-import { DollarSign, Download, Plus } from "lucide-react";
+import { toast } from "@/components/ui/use-toast";
+import { useAuth } from "@/contexts/AuthContext";
+import { useAppState } from "@/hooks/use-app-state";
+import { formatINR } from "@/lib/currency";
+import { sendNotificationEmail } from "@/lib/notification-email";
+import { supabase } from "@/lib/supabase";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import { Download, IndianRupee, Plus } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 
 type InvoiceStatus = "Paid" | "Pending" | "Overdue";
 
@@ -718,7 +718,7 @@ const Billing = () => {
           <Card key={s.label} className="border-none shadow-sm">
             <CardContent className="p-5">
               <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 mb-3">
-                <DollarSign className="h-5 w-5 text-primary" />
+                <IndianRupee className="h-5 w-5 text-primary" />
               </div>
               <p className="text-2xl font-bold text-foreground">{s.value}</p>
               <p className="text-sm text-muted-foreground">
