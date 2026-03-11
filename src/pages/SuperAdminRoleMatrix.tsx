@@ -1,12 +1,12 @@
-import { useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
+import { toast } from "@/components/ui/use-toast";
 import { useAppState } from "@/hooks/use-app-state";
 import { useAuditLog } from "@/hooks/use-audit-log";
 import { useSuperAdminNotifications } from "@/hooks/use-superadmin-notifications";
 import { canUseBackend } from "@/lib/hotel-api";
 import { supabase } from "@/lib/supabase";
-import { toast } from "@/components/ui/use-toast";
+import { useEffect } from "react";
 
 type RoleKey = "admin" | "manager" | "frontdesk" | "housekeeping" | "accountant";
 type ModulePermission = {
@@ -64,7 +64,7 @@ const SuperAdminRoleMatrix = () => {
       .eq("user_id", user.id)
       .order("created_at", { ascending: true });
 
-    if (error || !data) return;
+    if (error || !data || data.length === 0) return;
 
     setMatrix(
       (data as RoleMatrixDbRow[]).map((row) => ({
