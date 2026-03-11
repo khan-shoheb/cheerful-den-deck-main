@@ -1,11 +1,11 @@
-import { useMemo, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
 import { useAuditLog } from "@/hooks/use-audit-log";
+import { useMemo, useState } from "react";
 
 const SuperAdminAudit = () => {
-  const { entries } = useAuditLog();
+  const { entries, clearLogs } = useAuditLog();
   const [searchTerm, setSearchTerm] = useState("");
   const [moduleFilter, setModuleFilter] = useState("all");
 
@@ -64,7 +64,7 @@ const SuperAdminAudit = () => {
           <CardTitle className="text-base">Audit Logs</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
             <Input
               placeholder="Search action, details, actor"
               value={searchTerm}
@@ -84,6 +84,16 @@ const SuperAdminAudit = () => {
             </select>
             <Button variant="outline" onClick={handleExport}>
               Export JSON
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                if (window.confirm("Are you sure you want to clear all audit logs? This cannot be undone.")) {
+                  clearLogs();
+                }
+              }}
+            >
+              Clear All Logs
             </Button>
           </div>
 

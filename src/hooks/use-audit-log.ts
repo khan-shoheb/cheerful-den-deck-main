@@ -1,5 +1,5 @@
-import { useAppState } from "@/hooks/use-app-state";
 import { useAuth } from "@/contexts/AuthContext";
+import { useAppState } from "@/hooks/use-app-state";
 
 export type AuditLogEntry = {
   id: string;
@@ -35,5 +35,9 @@ export const useAuditLog = () => {
     setEntries((prev) => [entry, ...prev].slice(0, 500));
   };
 
-  return { entries, logAction };
+  const clearLogs = () => {
+    setEntries([]);
+  };
+
+  return { entries, logAction, clearLogs };
 };
