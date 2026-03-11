@@ -8,6 +8,10 @@ type LoginResult = { success: true } | { success: false; error: string };
 const toFriendlyAuthError = (message: string, loginAs: "admin" | "superadmin"): string => {
   const lower = message.toLowerCase();
 
+  if (lower.includes("failed to fetch") || lower.includes("network request failed")) {
+    return "Network issue: unable to reach Supabase from this device. Check mobile internet/VPN/private DNS, then retry.";
+  }
+
   if (lower.includes("invalid login credentials")) {
     return loginAs === "superadmin"
       ? "Invalid login credentials. Ensure this user exists in Supabase Auth Users and password is correct."
@@ -177,6 +181,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           password: normalizedPassword,
         });
         if (error) {
+          const normalizedError = (error.message || "").toLowerCase();
+          const isNetworkFetchIssue =
+            normalizedError.includes("failed to fetch") || normalizedError.includes("network request failed");
+
+          // If Supabase is temporarily unreachable on this device, allow explicit demo credentials as fallback.
+          if (isNetworkFetchIssue && (isAdminDemoMatch || isSuperAdminDemoMatch)) {
+            const role: AppRole = isSuperAdminDemoMatch ? "superadmin" : "admin";
+            const isRoleAllowed = loginAs === "superadmin" ? role === "superadmin" : role !== "superadmin";
+            if (isRoleAllowed) {
+              applyLocalMockSession(role);
+              return { success: true };
+            }
+          }
+
           return {
             success: false,
             error: toFriendlyAuthError(error.message || "Invalid credentials", loginAs),
