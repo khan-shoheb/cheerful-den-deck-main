@@ -64,12 +64,18 @@ const SuperAdminRoleMatrix = () => {
       .eq("user_id", user.id)
       .order("created_at", { ascending: true });
 
-    if (error || !data || data.length === 0) return;
+    if (error || !data) return;
+
+    // Merge backend saved rows into defaultMatrix so all modules always appear.
+    // Backend data overrides defaults for modules that were saved; rest keep defaults.
+    const backendMap = new Map(
+      (data as RoleMatrixDbRow[]).map((row) => [row.module, row.permissions])
+    );
 
     setMatrix(
-      (data as RoleMatrixDbRow[]).map((row) => ({
+      defaultMatrix.map((row) => ({
         module: row.module,
-        permissions: row.permissions,
+        permissions: backendMap.has(row.module) ? backendMap.get(row.module)! : row.permissions,
       })),
     );
   };
